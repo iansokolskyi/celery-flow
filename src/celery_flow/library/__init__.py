@@ -1,0 +1,1 @@
+"""Library component - Celery integration."""
