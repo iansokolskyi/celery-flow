@@ -140,24 +140,18 @@ class TestGetTransport:
 
         Note: This doesn't actually connect to Redis, it just creates the client.
         """
-        from celery_flow.library.transports.redis import RedisTransport
-
         transport = get_transport("redis://localhost:6379/0")
 
         assert isinstance(transport, RedisTransport)
 
     def test_rediss_scheme_normalized(self) -> None:
         """rediss:// (TLS) is normalized to redis transport."""
-        from celery_flow.library.transports.redis import RedisTransport
-
         transport = get_transport("rediss://localhost:6379/0")
 
         assert isinstance(transport, RedisTransport)
 
     def test_prefix_passed_to_transport(self) -> None:
         """Custom prefix is passed to transport."""
-        from celery_flow.library.transports.redis import RedisTransport
-
         transport = get_transport(
             "redis://localhost:6379/0",
             prefix="custom_prefix",
@@ -168,8 +162,6 @@ class TestGetTransport:
 
     def test_ttl_passed_to_transport(self) -> None:
         """Custom TTL is passed to transport."""
-        from celery_flow.library.transports.redis import RedisTransport
-
         transport = get_transport(
             "redis://localhost:6379/0",
             ttl=7200,
