@@ -62,3 +62,26 @@ ui-build:
 ui-check:
 	cd $(FRONTEND_DIR) && npm run check && npm run typecheck
 
+# =============================================================================
+# Versioning (bump-my-version)
+# =============================================================================
+# Show current version
+version:
+	@bump-my-version show current_version
+
+# Dry run - show what would happen
+bump-dry:
+	bump-my-version bump patch --dry-run --verbose
+
+# Bump patch version (0.1.0 -> 0.1.1)
+bump-patch:
+	bump-my-version bump patch
+
+# Bump minor version (0.1.0 -> 0.2.0)
+bump-minor:
+	bump-my-version bump minor
+
+# Bump major version (0.1.0 -> 1.0.0)
+bump-major:
+	bump-my-version bump major
+
