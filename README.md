@@ -249,17 +249,11 @@ Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md)
 git clone https://github.com/iansokolskyi/celery-flow.git
 cd celery-flow
 
-# Install dev dependencies
-pip install -e ".[dev]"
+# Install dependencies (requires uv)
+uv sync --all-extras
 
-# Run tests
-pytest
-
-# Type checking
-mypy src/
-
-# Linting
-ruff check src/
+# Run checks
+make check
 ```
 
 ## 📄 License

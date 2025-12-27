@@ -1,4 +1,8 @@
-.PHONY: check types lint format test coverage clean ui-install ui-dev ui-build
+.PHONY: install check types lint format test coverage clean ui-install ui-dev ui-build
+
+# Install all dependencies
+install:
+	uv sync --all-extras
 
 # Full verification suite - run after every change
 check: types lint test
@@ -6,39 +10,39 @@ check: types lint test
 
 # Individual checks
 types:
-	mypy src/ --strict
+	uv run mypy src/ --strict
 
 lint:
-	ruff check src/ tests/
-	ruff format --check src/ tests/
+	uv run ruff check src/ tests/
+	uv run ruff format --check src/ tests/
 
 format:
-	ruff format src/ tests/
-	ruff check --fix src/ tests/
+	uv run ruff format src/ tests/
+	uv run ruff check --fix src/ tests/
 
 test:
-	pytest --cov=celery_flow --cov-report=term-missing --cov-fail-under=80
+	uv run pytest --cov=celery_flow --cov-report=term-missing --cov-fail-under=80
 
 # Run tests without coverage (faster iteration)
 test-fast:
-	pytest -x -q
+	uv run pytest -x -q
 
 # Run only unit tests
 test-unit:
-	pytest tests/unit/ -v
+	uv run pytest tests/unit/ -v
 
 # Run integration tests
 test-integration:
-	pytest -m integration -v
+	uv run pytest -m integration -v
 
 # Show coverage report
 coverage:
-	pytest --cov=celery_flow --cov-report=html
+	uv run pytest --cov=celery_flow --cov-report=html
 	@echo "Open htmlcov/index.html to view coverage report"
 
 # Clean build artifacts
 clean:
-	rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage
+	rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage dist/
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 # =============================================================================
@@ -67,21 +71,20 @@ ui-check:
 # =============================================================================
 # Show current version
 version:
-	@bump-my-version show current_version
+	@uv run bump-my-version show current_version
 
 # Dry run - show what would happen
 bump-dry:
-	bump-my-version bump patch --dry-run --verbose
+	uv run bump-my-version bump patch --dry-run --verbose
 
 # Bump patch version (0.1.0 -> 0.1.1)
 bump-patch:
-	bump-my-version bump patch
+	uv run bump-my-version bump patch
 
 # Bump minor version (0.1.0 -> 0.2.0)
 bump-minor:
-	bump-my-version bump minor
+	uv run bump-my-version bump minor
 
 # Bump major version (0.1.0 -> 1.0.0)
 bump-major:
-	bump-my-version bump major
-
+	uv run bump-my-version bump major

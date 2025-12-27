@@ -7,7 +7,7 @@ Thank you for your interest in contributing! This guide will help you get starte
 ### Prerequisites
 
 - Python 3.10+
-- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+- [uv](https://docs.astral.sh/uv/) (required)
 - Redis (for integration tests)
 - Docker (for e2e tests)
 
@@ -18,15 +18,11 @@ Thank you for your interest in contributing! This guide will help you get starte
 git clone https://github.com/iansokolskyi/celery-flow.git
 cd celery-flow
 
-# Create virtual environment
-uv venv
-source .venv/bin/activate
-
-# Install dev dependencies
-uv pip install -e ".[dev]"
+# Install dependencies (creates venv automatically)
+uv sync --all-extras
 
 # Install pre-commit hooks
-pre-commit install
+uv run pre-commit install
 
 # Run checks
 make check
@@ -42,7 +38,7 @@ make check
 
 # Individual checks
 make lint       # ruff check + format
-make typecheck  # mypy --strict
+make types      # mypy --strict
 make test       # pytest with coverage
 ```
 
@@ -52,10 +48,10 @@ We use [ruff](https://github.com/astral-sh/ruff) for linting and formatting:
 
 ```bash
 # Auto-fix lint issues
-ruff check --fix src/ tests/
+uv run ruff check --fix src/ tests/
 
 # Format code
-ruff format src/ tests/
+uv run ruff format src/ tests/
 ```
 
 ### Type Checking
@@ -63,7 +59,7 @@ ruff format src/ tests/
 All code must pass `mypy --strict`:
 
 ```bash
-mypy src/ --strict
+uv run mypy src/ --strict
 ```
 
 - Use type hints on all functions and methods
@@ -74,16 +70,26 @@ mypy src/ --strict
 
 ```bash
 # Unit tests only (fast)
-pytest tests/unit/
+uv run pytest tests/unit/
 
 # All tests
-pytest
+uv run pytest
 
 # With coverage
-pytest --cov=celery_flow --cov-report=term-missing
+uv run pytest --cov=celery_flow --cov-report=term-missing
 ```
 
 **Coverage requirement:** 80% minimum
+
+### Updating Dependencies
+
+```bash
+# Update lock file after changing pyproject.toml
+uv lock
+
+# Upgrade all dependencies to latest
+uv lock --upgrade
+```
 
 ## Pull Request Process
 
@@ -136,4 +142,3 @@ pytest --cov=celery_flow --cov-report=term-missing
 - Start a discussion for questions
 
 Thank you for contributing! 🙏
-
