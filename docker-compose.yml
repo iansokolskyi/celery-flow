@@ -1,0 +1,52 @@
+# Docker Compose for celery-flow development and demo
+#
+# Usage:
+#   docker compose up -d              # Start all services
+#   docker compose logs -f server     # View server logs
+#   docker compose down               # Stop all services
+#
+# Access:
+#   - UI: http://localhost:8000
+#   - API: http://localhost:8000/api/health
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - CELERY_FLOW_BROKER_URL=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: [ "server", "--broker-url", "redis://redis:6379", "--host", "0.0.0.0", "--port", "8000" ]
+  # Example: Run consumer separately (production pattern)
+  # consumer:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   environment:
+  #     - CELERY_FLOW_BROKER_URL=redis://redis:6379
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #   command: ["consume", "--broker-url", "redis://redis:6379"]
+
+volumes:
+  redis-data:
+
+
