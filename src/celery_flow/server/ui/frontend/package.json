@@ -11,7 +11,8 @@
     "format": "biome format .",
     "check": "biome check .",
     "fix": "biome check --write .",
-    "typecheck": "tsc --noEmit"
+    "generate": "tsr generate",
+    "typecheck": "tsr generate && tsc --noEmit"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.60.0",
@@ -23,6 +24,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
+    "@tanstack/router-cli": "^1.144.0",
     "@tanstack/router-devtools": "^1.82.0",
     "@tanstack/router-plugin": "^1.79.0",
     "@types/node": "^25.0.3",
