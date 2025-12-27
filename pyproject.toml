@@ -70,11 +70,11 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/celery-flow/celery-flow"
-Documentation = "https://github.com/celery-flow/celery-flow#readme"
-Repository = "https://github.com/celery-flow/celery-flow"
-Issues = "https://github.com/celery-flow/celery-flow/issues"
-Changelog = "https://github.com/celery-flow/celery-flow/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/iansokolskyi/celery-flow"
+Documentation = "https://github.com/iansokolskyi/celery-flow#readme"
+Repository = "https://github.com/iansokolskyi/celery-flow"
+Issues = "https://github.com/iansokolskyi/celery-flow/issues"
+Changelog = "https://github.com/iansokolskyi/celery-flow/blob/main/CHANGELOG.md"
 
 [project.scripts]
 celery-flow = "celery_flow.server.__main__:main"

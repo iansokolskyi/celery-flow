@@ -61,7 +61,6 @@ def init(
         # With explicit transport URL:
         >>> init(app, transport_url="redis://events-redis:6379/1")
     """
-    # Determine broker URL
     url = transport_url or app.conf.broker_url
     if not url:
         raise ConfigurationError(
@@ -69,7 +68,6 @@ def init(
             "Celery's broker_url."
         )
 
-    # Create and store configuration
     config = CeleryFlowConfig(
         transport_url=url,
         prefix=prefix,
@@ -78,6 +76,5 @@ def init(
     )
     set_config(config)
 
-    # Create transport and connect signals
     transport = get_transport(url, prefix=prefix, ttl=ttl)
     connect_signals(transport)

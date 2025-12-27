@@ -4,6 +4,8 @@
 
 [![PyPI version](https://badge.fury.io/py/celery-flow.svg)](https://badge.fury.io/py/celery-flow)
 [![Python](https://img.shields.io/pypi/pyversions/celery-flow.svg)](https://pypi.org/project/celery-flow/)
+[![CI](https://github.com/iansokolskyi/celery-flow/actions/workflows/ci.yml/badge.svg)](https://github.com/iansokolskyi/celery-flow/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/iansokolskyi/celery-flow/graph/badge.svg)](https://codecov.io/gh/iansokolskyi/celery-flow)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![Type checked: mypy](https://img.shields.io/badge/type%20checked-mypy-blue.svg)](https://mypy-lang.org/)
@@ -244,7 +246,7 @@ Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md)
 
 ```bash
 # Clone the repo
-git clone https://github.com/celery-flow/celery-flow.git
+git clone https://github.com/iansokolskyi/celery-flow.git
 cd celery-flow
 
 # Install dev dependencies

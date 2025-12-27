@@ -98,7 +98,6 @@ def consume(
     consumer.start()
     typer.echo("Consumer running. Press Ctrl+C to stop.")
 
-    # Block until stopped
     try:
         signal.pause()
     except AttributeError:

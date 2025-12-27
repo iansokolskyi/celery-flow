@@ -7,24 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2024-12-27
+
 ### Added
-- Initial project structure
-- Core domain models: `TaskEvent`, `TaskState`, `TaskNode`, `TaskGraph`
-- Protocol definitions for `EventTransport` and `TaskRepository`
-- Basic unit tests for core models
-
-### Changed
-- Nothing yet
-
-### Deprecated
-- Nothing yet
-
-### Removed
-- Nothing yet
-
-### Fixed
-- Nothing yet
-
-### Security
-- Nothing yet
+- **Core domain models**: `TaskEvent`, `TaskState`, `TaskNode`, `TaskGraph`
+- **Protocol definitions**: `EventTransport`, `TaskRepository`, `AsyncEventConsumer`
+- **Event transports**: Redis Streams (`RedisTransport`), in-memory (`MemoryTransport`)
+- **Celery signal integration**: Automatic event capture via `celery_flow.init(app)`
+- **Server components**:
+  - `GraphStore` — Thread-safe in-memory graph storage with LRU eviction
+  - `EventConsumer` / `AsyncEventConsumer` — Background event processing
+  - `WebSocketManager` — Real-time event broadcasting
+- **REST API**: `/api/tasks`, `/api/graphs`, `/api/health` endpoints
+- **FastAPI integration**:
+  - `CeleryFlowExtension` — Full extension with lifespan management
+  - `create_router()` — Minimal router for custom setups
+  - Auth helpers: `require_basic_auth`, `require_api_key`, `no_auth`
+- **React UI**: Task list, graph visualization (react-flow), timeline view
+- **CLI commands**: `celery-flow server`, `celery-flow consume`
+- **Docker support**: Multi-stage Dockerfile, docker-compose.yml for local dev
+- **Comprehensive test suite**: 198 tests, 94% coverage
 

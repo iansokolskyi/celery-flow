@@ -12,7 +12,7 @@ COPY src/celery_flow/server/ui/frontend/ ./
 RUN npm run build
 
 # Stage 2: Build Python package
-FROM python:3.11-slim AS builder
+FROM python:3.12-slim AS builder
 
 WORKDIR /app
 
@@ -30,7 +30,7 @@ COPY --from=frontend-builder /app/frontend/dist/ src/celery_flow/server/ui/front
 RUN hatch build -t wheel
 
 # Stage 3: Production image
-FROM python:3.11-slim AS production
+FROM python:3.12-slim AS production
 
 WORKDIR /app
 
