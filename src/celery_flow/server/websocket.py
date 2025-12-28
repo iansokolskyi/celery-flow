@@ -19,6 +19,7 @@ class WebSocketManager:
     """Thread-safe WebSocket manager that broadcasts events to connected clients."""
 
     def __init__(self) -> None:
+        """Initialize WebSocket manager with empty connection set."""
         self._connections: set[WebSocket] = set()
         self._queue: asyncio.Queue[TaskEvent] = asyncio.Queue()
         self._broadcast_task: asyncio.Task[None] | None = None

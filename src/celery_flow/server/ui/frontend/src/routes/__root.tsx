@@ -1,7 +1,9 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { createRootRouteWithContext, Link, Outlet } from '@tanstack/react-router'
 import { TanStackRouterDevtools } from '@tanstack/router-devtools'
-import { useWebSocket } from '@/hooks/useWebSocket'
+import { useHealth } from '@/api/queries'
+import { Tooltip } from '@/components/Tooltip'
+import { useWebSocketContext } from '@/hooks/WebSocketContext'
 
 interface RouterContext {
   queryClient: QueryClient
@@ -12,8 +14,35 @@ export const Route = createRootRouteWithContext<RouterContext>()({
 })
 
 function RootLayout() {
-  // Connect to WebSocket for real-time updates
-  const { connectionStatus } = useWebSocket()
+  // Get WebSocket connection status from context
+  const { connectionStatus, isConnected } = useWebSocketContext()
+
+  // Check if server is reachable via health endpoint
+  const { isError: isServerDown } = useHealth()
+
+  // Determine display status
+  // Priority: Server down > WS connected > WS connecting > Polling
+  let statusLabel: string
+  let statusColor: string
+  let statusTooltip: string
+
+  if (isServerDown) {
+    statusLabel = 'Offline'
+    statusColor = 'bg-red-500'
+    statusTooltip = 'Server is unreachable. Check if celery-flow is running.'
+  } else if (isConnected) {
+    statusLabel = 'Live'
+    statusColor = 'bg-green-500'
+    statusTooltip = 'Real-time updates via WebSocket'
+  } else if (connectionStatus === 'connecting') {
+    statusLabel = 'Connecting'
+    statusColor = 'bg-amber-500 animate-pulse'
+    statusTooltip = 'Connecting to WebSocket...'
+  } else {
+    statusLabel = 'Polling'
+    statusColor = 'bg-amber-500'
+    statusTooltip = 'Updates every 5s. For real-time updates, configure WebSocket proxy.'
+  }
 
   return (
     <div className="min-h-screen bg-slate-950">
@@ -50,21 +79,13 @@ function RootLayout() {
               </Link>
             </nav>
 
-            {/* Status indicator */}
-            <div className="flex items-center gap-2">
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  connectionStatus === 'connected'
-                    ? 'bg-green-500'
-                    : connectionStatus === 'connecting'
-                      ? 'bg-amber-500 animate-pulse'
-                      : 'bg-red-500'
-                }`}
-              />
-              <span className="text-xs text-slate-500">
-                {connectionStatus === 'connected' ? 'Live' : connectionStatus}
-              </span>
-            </div>
+            {/* Status indicator with tooltip */}
+            <Tooltip content={statusTooltip} placement="bottom">
+              <div className="flex items-center gap-2 cursor-help">
+                <span className={`w-2 h-2 rounded-full ${statusColor}`} />
+                <span className="text-xs text-slate-500">{statusLabel}</span>
+              </div>
+            </Tooltip>
           </div>
         </div>
       </header>

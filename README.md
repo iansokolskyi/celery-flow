@@ -1,6 +1,6 @@
 # celery-flow 🌊
 
-**A lightweight Celery task flow visualizer**
+**Zero-infrastructure Celery task flow visualizer**
 
 [![PyPI version](https://badge.fury.io/py/celery-flow.svg)](https://badge.fury.io/py/celery-flow)
 [![Python](https://img.shields.io/pypi/pyversions/celery-flow.svg)](https://pypi.org/project/celery-flow/)
@@ -14,7 +14,7 @@
 
 > **Flower answers "what exists". celery-flow answers "what happened".**
 
-`celery-flow` visualizes Celery task execution flows, helping you debug complex workflows by showing task graphs, timelines, retries, and parent-child relationships.
+`celery-flow` models Celery as a graph of executions derived from events. Visualize task flows, timelines, retries, and parent-child relationships — using your existing broker with zero new infrastructure.
 
 ## ✨ Features
 
@@ -26,6 +26,7 @@
 - **Task Registry** — Browse all discovered task definitions
 - **Correlation Tracking** — Trace requests across multiple tasks via `trace_id`
 - **Retry Visibility** — Know exactly which retries happened and why
+- **Zero Infrastructure** — Uses your existing broker; no database required
 - **Broker-Agnostic** — Works with Redis, RabbitMQ, and other Celery brokers
 - **FastAPI Pluggable** — Mount directly into your existing FastAPI app
 - **Zero Config** — Auto-detects your Celery broker configuration
@@ -67,7 +68,7 @@ See [Deployment Options](#️-deployment-options) for FastAPI integration and pr
 
 celery-flow is designed as two decoupled components:
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────┐
 │                        Your Application                          │
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐        │
@@ -225,7 +226,6 @@ celery-flow consume
 # Terminal 2: Run API server (separate process, shares state via broker)
 celery-flow server
 ```
-
 ### Option 2: FastAPI Embedded
 
 Mount celery-flow directly into your existing FastAPI application:
@@ -280,6 +280,8 @@ app.include_router(flow.router, prefix="/celery-flow")
 
 ## 🗺️ Roadmap
 
+### Completed
+
 - [x] Task lifecycle tracking via signals
 - [x] Broker-agnostic event transport (Redis Streams)
 - [x] FastAPI pluggable integration
@@ -289,13 +291,21 @@ app.include_router(flow.router, prefix="/celery-flow")
 - [x] Task args/kwargs capture with sensitive data scrubbing
 - [x] Exception and traceback capture
 - [x] Task registry (browse all discovered tasks)
-- [x] PENDING state capture (task_sent signal) — see queued tasks immediately
-- [x] RECEIVED state capture (worker bootstep) — see when worker picks up task
+- [x] PENDING/RECEIVED state capture
+
+### Pre-Release
+
+- [ ] E2E test suite (Docker + Playwright)
+
+### Planned
+
+- [ ] Worker/queue tracking in events
+- [ ] Monitoring APIs (workers, stats, orphan detection)
+- [ ] UI reorganization (Dashboard, unified Executions, enhanced Registry)
 - [ ] RabbitMQ transport
-- [ ] Trace ID correlation
 - [ ] OpenTelemetry export
-- [ ] Task duration heatmaps
-- [ ] Failure clustering
+- [ ] Webhook event export
+- [ ] JSON export API
 
 ## 🤝 Contributing
 

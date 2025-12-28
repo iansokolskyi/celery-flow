@@ -1,25 +1,43 @@
 /**
- * WebSocket hook for real-time task updates.
+ * WebSocket context for sharing connection status globally.
  */
 
 import { useQueryClient } from '@tanstack/react-query'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
 import type { TaskEvent } from '@/api/client'
 
 type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error'
 
-interface UseWebSocketReturn {
+interface WebSocketContextValue {
   connectionStatus: ConnectionStatus
+  isConnected: boolean
   lastEvent: TaskEvent | null
   events: TaskEvent[]
 }
+
+const WebSocketContext = createContext<WebSocketContextValue | null>(null)
 
 // WebSocket URL
 const WS_URL = import.meta.env.DEV
   ? `ws://${window.location.hostname}:8000/celery-flow/ws`
   : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/celery-flow/ws`
 
-export function useWebSocket(): UseWebSocketReturn {
+// Reconnect interval when disconnected (3 seconds for quick recovery)
+const RECONNECT_INTERVAL = 3000
+
+interface WebSocketProviderProps {
+  children: ReactNode
+}
+
+export function WebSocketProvider({ children }: WebSocketProviderProps) {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting')
   const [lastEvent, setLastEvent] = useState<TaskEvent | null>(null)
   const [events, setEvents] = useState<TaskEvent[]>([])
@@ -28,7 +46,11 @@ export function useWebSocket(): UseWebSocketReturn {
   const reconnectTimeoutRef = useRef<number | null>(null)
 
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
+    // Don't reconnect if already connected or connecting
+    if (
+      wsRef.current?.readyState === WebSocket.OPEN ||
+      wsRef.current?.readyState === WebSocket.CONNECTING
+    ) {
       return
     }
 
@@ -59,21 +81,33 @@ export function useWebSocket(): UseWebSocketReturn {
 
       ws.onclose = () => {
         setConnectionStatus('disconnected')
-        console.log('[WebSocket] Disconnected, reconnecting in 3s...')
+        wsRef.current = null
+        console.log('[WebSocket] Disconnected, will retry in 3s...')
 
-        // Reconnect after delay
+        // Schedule reconnect
+        if (reconnectTimeoutRef.current) {
+          clearTimeout(reconnectTimeoutRef.current)
+        }
         reconnectTimeoutRef.current = window.setTimeout(() => {
           connect()
-        }, 3000)
+        }, RECONNECT_INTERVAL)
       }
 
-      ws.onerror = (error) => {
+      ws.onerror = () => {
         setConnectionStatus('error')
-        console.error('[WebSocket] Error:', error)
+        // onclose will be called after onerror, which will trigger reconnect
       }
     } catch (e) {
       setConnectionStatus('error')
       console.error('[WebSocket] Failed to connect:', e)
+
+      // Schedule reconnect on error
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current)
+      }
+      reconnectTimeoutRef.current = window.setTimeout(() => {
+        connect()
+      }, RECONNECT_INTERVAL)
     }
   }, [queryClient])
 
@@ -90,9 +124,20 @@ export function useWebSocket(): UseWebSocketReturn {
     }
   }, [connect])
 
-  return {
+  const value: WebSocketContextValue = {
     connectionStatus,
+    isConnected: connectionStatus === 'connected',
     lastEvent,
     events,
   }
+
+  return <WebSocketContext.Provider value={value}>{children}</WebSocketContext.Provider>
+}
+
+export function useWebSocketContext(): WebSocketContextValue {
+  const context = useContext(WebSocketContext)
+  if (!context) {
+    throw new Error('useWebSocketContext must be used within a WebSocketProvider')
+  }
+  return context
 }

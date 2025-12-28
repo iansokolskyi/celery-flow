@@ -26,6 +26,7 @@ class EventConsumer:
         prefix: str = "celery_flow",
         ttl: int = 86400,
     ) -> None:
+        """Initialize consumer with broker URL and target store."""
         self._broker_url = broker_url
         self._store = store
         self._prefix = prefix
@@ -101,6 +102,7 @@ class AsyncEventConsumer:
         prefix: str = "celery_flow",
         ttl: int = 86400,
     ) -> None:
+        """Initialize async consumer wrapper with broker URL and target store."""
         self._consumer = EventConsumer(broker_url, store, prefix=prefix, ttl=ttl)
 
     @property

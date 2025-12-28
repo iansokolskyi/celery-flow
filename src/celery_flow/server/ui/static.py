@@ -29,6 +29,7 @@ def get_static_router() -> APIRouter | None:
 
     @router.get("/", response_class=HTMLResponse)
     async def serve_index() -> HTMLResponse:
+        """Serve the main index.html page."""
         index_path = _FRONTEND_DIR / "index.html"
         if not index_path.exists():
             return HTMLResponse("<h1>UI not built</h1>", status_code=503)
@@ -36,6 +37,7 @@ def get_static_router() -> APIRouter | None:
 
     @router.get("/{path:path}", response_model=None)
     async def serve_spa(path: str) -> FileResponse | HTMLResponse:
+        """Serve static files or fall back to index.html for SPA routing."""
         file_path = _FRONTEND_DIR / path
         if file_path.exists() and file_path.is_file():
             return FileResponse(file_path)

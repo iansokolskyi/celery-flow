@@ -18,6 +18,7 @@ class GraphStore:
     """Thread-safe in-memory store for TaskGraph with LRU eviction."""
 
     def __init__(self, max_nodes: int = 10000) -> None:
+        """Initialize store with optional maximum node limit for LRU eviction."""
         self._graph = TaskGraph()
         self._lock = threading.RLock()
         self._max_nodes = max_nodes
