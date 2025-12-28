@@ -19,7 +19,11 @@
 ## ✨ Features
 
 - **Task Flow Graphs** — Visualize parent → child chains, groups, and chords as DAGs
-- **Execution Timeline** — See queued → started → retried → finished states
+- **Execution Timeline** — See queued → received → started → retried → finished states
+- **Full Lifecycle Capture** — PENDING, RECEIVED, STARTED, RETRY, SUCCESS, FAILURE states
+- **Arguments & Results** — View task inputs and outputs with sensitive data scrubbing
+- **Exception Capture** — Full traceback visibility on retries and failures
+- **Task Registry** — Browse all discovered task definitions
 - **Correlation Tracking** — Trace requests across multiple tasks via `trace_id`
 - **Retry Visibility** — Know exactly which retries happened and why
 - **Broker-Agnostic** — Works with Redis, RabbitMQ, and other Celery brokers
@@ -115,9 +119,27 @@ init(
     transport_url="redis://localhost:6379/0",
     prefix="celery_flow",                   # Key/queue prefix
     ttl=86400,                              # Event TTL in seconds (default: 24h)
-    redact_args=True,                       # Hash sensitive arguments
+    
+    # Data capture (all enabled by default)
+    capture_args=True,                      # Capture task args/kwargs
+    capture_result=True,                    # Capture return values
+    
+    # Sensitive data scrubbing (Sentry-style)
+    scrub_sensitive_data=True,              # Scrub passwords, API keys, etc.
+    additional_sensitive_keys=frozenset({"my_secret"}),  # Add custom keys
+    safe_keys=frozenset({"public_key"}),    # Never scrub these keys
 )
 ```
+
+#### Sensitive Data Scrubbing
+
+By default, celery-flow scrubs common sensitive keys from task arguments:
+- Passwords: `password`, `passwd`, `pwd`, `secret`
+- API keys: `api_key`, `apikey`, `token`, `bearer`, `authorization`
+- Financial: `credit_card`, `cvv`, `ssn`
+- Session: `cookie`, `session`, `csrf`
+
+Scrubbed values appear as `[Filtered]` in the UI.
 
 ### Environment Variables
 
@@ -264,6 +286,11 @@ app.include_router(flow.router, prefix="/celery-flow")
 - [x] React SPA dashboard with real-time WebSocket updates
 - [x] Task flow graph visualization
 - [x] Execution timeline view
+- [x] Task args/kwargs capture with sensitive data scrubbing
+- [x] Exception and traceback capture
+- [x] Task registry (browse all discovered tasks)
+- [x] PENDING state capture (task_sent signal) — see queued tasks immediately
+- [x] RECEIVED state capture (worker bootstep) — see when worker picks up task
 - [ ] RabbitMQ transport
 - [ ] Trace ID correlation
 - [ ] OpenTelemetry export
