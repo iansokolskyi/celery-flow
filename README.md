@@ -29,13 +29,13 @@
 
 ## 🚀 Quick Start
 
-### Installation
+### 1. Install
 
 ```bash
 pip install celery-flow
 ```
 
-### 1. Instrument your Celery app
+### 2. Instrument your Celery app
 
 ```python
 from celery import Celery
@@ -47,17 +47,17 @@ app = Celery("myapp", broker="redis://localhost:6379/0")
 init(app)
 ```
 
-### 2. Run the visualizer
+### 3. Run the visualizer
 
 ```bash
-# Auto-detect from environment or use explicit URL
-celery-flow server --broker-url redis://localhost:6379/0
-
-# Or with RabbitMQ
-celery-flow server --broker-url amqp://guest:guest@localhost:5672/
+celery-flow server
 ```
 
 Open [http://localhost:8000](http://localhost:8000) and watch your task flows come alive.
+
+> By default, connects to `redis://localhost:6379/0`. Override with `--broker-url` or `CELERY_FLOW_BROKER_URL` env var.
+
+See [Deployment Options](#️-deployment-options) for FastAPI integration and production setups.
 
 ## 📦 Architecture
 
@@ -119,15 +119,6 @@ init(
 )
 ```
 
-### Server Options
-
-```bash
-celery-flow server \
-    --broker-url redis://localhost:6379/0 \
-    --host 0.0.0.0 \
-    --port 8000
-```
-
 ### Environment Variables
 
 | Variable | Description | Default |
@@ -170,15 +161,52 @@ services:
       - CELERY_FLOW_BROKER_URL=redis://redis:6379/0
 ```
 
-## 🔌 FastAPI Integration
+## 🖥️ Deployment Options
 
-Mount celery-flow directly into your existing FastAPI application — no separate server needed!
+celery-flow offers two deployment modes depending on your needs:
 
-### Basic Setup
+| Mode | Best For | Command |
+|------|----------|---------|
+| **Standalone Server** | Dedicated monitoring, simple setup | `celery-flow server` |
+| **FastAPI Embedded** | Single-app deployment, existing FastAPI apps | `CeleryFlowExtension` |
+
+### Option 1: Standalone Server (Recommended)
+
+The simplest way to run celery-flow — a dedicated monitoring service:
 
 ```bash
-pip install celery-flow[server]
+pip install celery-flow
+
+celery-flow server
 ```
+
+Open [http://localhost:8000](http://localhost:8000) to view the dashboard.
+
+#### Server Options
+
+```bash
+celery-flow server \
+    --broker-url redis://myredis:6379/0 \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --reload  # For development
+```
+
+#### High-Scale Production Setup
+
+For high-throughput environments, run the consumer separately from the web server:
+
+```bash
+# Terminal 1: Run consumer (processes events)
+celery-flow consume
+
+# Terminal 2: Run API server (separate process, shares state via broker)
+celery-flow server
+```
+
+### Option 2: FastAPI Embedded
+
+Mount celery-flow directly into your existing FastAPI application:
 
 ```python
 from fastapi import FastAPI
@@ -189,7 +217,9 @@ app = FastAPI(lifespan=flow.lifespan)
 app.include_router(flow.router, prefix="/celery-flow")
 ```
 
-### With Custom Authentication
+Access the dashboard at `/celery-flow/` within your app.
+
+#### With Custom Authentication
 
 Use your existing auth middleware:
 
@@ -219,12 +249,12 @@ app = FastAPI(lifespan=flow.lifespan)
 app.include_router(flow.router, prefix="/celery-flow")
 ```
 
-### Deployment Options
+#### Embedded Consumer Modes
 
-| Mode | Use Case | Consumer |
-|------|----------|----------|
-| Embedded | Development, simple apps | Background task in FastAPI process |
-| External | Production, high scale | Separate `celery-flow consume` process |
+| Mode | Use Case | Setup |
+|------|----------|-------|
+| Embedded | Development, simple apps | Default — consumer runs in FastAPI process |
+| External | Production, high scale | Run `celery-flow consume` separately |
 
 ## 🗺️ Roadmap
 
