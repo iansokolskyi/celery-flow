@@ -98,6 +98,7 @@ def consume(
     consumer = EventConsumer(broker_url, store, prefix=prefix, ttl=ttl)
 
     def handle_signal(_signum: int, _frame: object) -> None:
+        """Handle shutdown signals gracefully."""
         typer.echo("\nShutting down consumer...")
         consumer.stop()
         sys.exit(0)

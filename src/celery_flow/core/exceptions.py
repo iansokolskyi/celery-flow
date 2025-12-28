@@ -17,6 +17,7 @@ class UnsupportedBrokerError(ConfigurationError):
     """Broker URL scheme not supported."""
 
     def __init__(self, scheme: str) -> None:
+        """Initialize with the unsupported broker scheme."""
         self.scheme = scheme
         super().__init__(
             f"Unsupported broker scheme: '{scheme}'. "

@@ -76,6 +76,7 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
             callbacks: Any,
             **kwargs: Any,
         ) -> Any:
+            """Emit RECEIVED event before delegating to original strategy."""
             # Emit RECEIVED event
             try:
                 self._emit_received(task_name, body, message)

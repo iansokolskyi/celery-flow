@@ -21,6 +21,7 @@ class RedisTransport:
     """Redis Streams-based event transport (XADD/XREAD)."""
 
     def __init__(self, client: Redis[Any], prefix: str, ttl: int) -> None:
+        """Initialize Redis transport with client and stream configuration."""
         self._client = client
         self._ttl = ttl
         self._stream_key = f"{prefix}:events"

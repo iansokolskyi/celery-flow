@@ -16,6 +16,7 @@ def create_websocket_router(ws_manager: WebSocketManager) -> APIRouter:
 
     @router.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
+        """Handle WebSocket connection for real-time task events."""
         await ws_manager.connect(websocket)
         try:
             await ws_manager.listen(websocket)

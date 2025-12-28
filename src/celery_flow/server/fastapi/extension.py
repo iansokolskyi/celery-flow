@@ -37,6 +37,7 @@ class CeleryFlowExtension:
         max_nodes: int = 10000,
         auth_dependency: Any = None,
     ) -> None:
+        """Initialize extension with broker URL and optional configuration."""
         self._broker_url = broker_url
         self._embedded_consumer = embedded_consumer
         self._serve_ui = serve_ui
@@ -109,6 +110,7 @@ class CeleryFlowExtension:
 
         @asynccontextmanager
         async def combined(app: FastAPI) -> AsyncIterator[None]:
+            """Combined lifespan context manager."""
             async with self.lifespan(app):
                 if other_lifespan is not None:
                     async with other_lifespan(app):

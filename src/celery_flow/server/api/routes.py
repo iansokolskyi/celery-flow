@@ -70,6 +70,7 @@ def create_api_router(
 
     @router.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
+        """Return server health status and connection counts."""
         return HealthResponse(
             status="ok",
             consumer_running=consumer.is_running if consumer else False,
@@ -90,6 +91,7 @@ def create_api_router(
             str | None, Query(description="Filter by name substring")
         ] = None,
     ) -> TaskListResponse:
+        """List tasks with optional filtering by state and name."""
         from celery_flow.core.events import TaskState as TS
 
         task_state: TaskState | None = None
@@ -148,6 +150,7 @@ def create_api_router(
         responses={404: {"model": ErrorResponse}},
     )
     async def get_task(task_id: str) -> TaskDetailResponse:
+        """Get detailed information for a specific task including children."""
         node = store.get_node(task_id)
         if node is None:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
@@ -164,6 +167,7 @@ def create_api_router(
         responses={404: {"model": ErrorResponse}},
     )
     async def get_task_children(task_id: str) -> list[TaskNodeResponse]:
+        """Get child tasks for a specific task."""
         node = store.get_node(task_id)
         if node is None:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
@@ -175,6 +179,7 @@ def create_api_router(
     async def list_graphs(
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
     ) -> GraphListResponse:
+        """List task execution graphs (root tasks)."""
         roots = store.get_root_nodes(limit=limit)
         return GraphListResponse(
             graphs=[_node_to_graph_response(r) for r in roots],
@@ -187,6 +192,7 @@ def create_api_router(
         responses={404: {"model": ErrorResponse}},
     )
     async def get_graph(root_id: str) -> GraphResponse:
+        """Get complete task graph starting from a root task."""
         graph = store.get_graph_from_root(root_id)
         if not graph:
             raise HTTPException(status_code=404, detail=f"Graph {root_id} not found")
