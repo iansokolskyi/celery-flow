@@ -140,6 +140,7 @@ By default, celery-flow scrubs common sensitive keys from task arguments:
 - Session: `cookie`, `session`, `csrf`
 
 Scrubbed values appear as `[Filtered]` in the UI.
+
 ### Environment Variables
 
 | Variable | Description | Default |
