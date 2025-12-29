@@ -20,7 +20,7 @@ WORKDIR /app
 RUN pip install --no-cache-dir hatch
 
 # Copy source
-COPY pyproject.toml README.md LICENSE ./
+COPY pyproject.toml README.md LICENSE build_ui.py ./
 COPY src/ src/
 
 # Copy pre-built frontend

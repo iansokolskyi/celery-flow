@@ -150,6 +150,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
     { name = "types-redis" },
+    { name = "websockets" },
 ]
 rabbitmq = [
     { name = "pika" },
@@ -176,6 +177,7 @@ requires-dist = [
     { name = "types-redis", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "typing-extensions", specifier = ">=4.0.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.20.0" },
+    { name = "websockets", marker = "extra == 'dev'", specifier = ">=12.0" },
 ]
 provides-extras = ["rabbitmq", "dev"]
 
