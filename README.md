@@ -154,27 +154,34 @@ Scrubbed values appear as `[Filtered]` in the UI.
 celery-flow automatically detects and visualizes Celery canvas constructs:
 
 ```text
-parallel_group() → add()     # When parent task spawns a group,
-                 → add()     # the parent naturally visualizes the grouping
-                 → add()
+# Parent-spawned group: GROUP is child of parent
+batch_processor
+└── ┌─ GROUP ──────────┐
+    │  ├── add(1, 2)   │
+    │  ├── add(3, 4)   │
+    │  └── add(5, 6)   │
+    └──────────────────┘
 
-group(a, b, c)  →   GROUP ─→ a     # Standalone groups (no parent task) get a
-                         ├→ b     # synthetic GROUP node with dashed border
-                         └→ c
+# Standalone group: GROUP is a root node
+┌─ GROUP ──────────┐
+│  ├── add(1, 1)   │
+│  ├── add(2, 2)   │
+│  └── add(3, 3)   │
+└──────────────────┘
+
+# Chord: header tasks inside, callback outside with edges
+┌─ CHORD ──────────┐
+│  ├── add(10, 10) │──┐
+│  ├── add(20, 20) │──┼──► aggregate_results
+│  └── add(30, 30) │──┘
+└──────────────────┘
 ```
 
-- **Smart grouping** — GROUP nodes only appear for standalone groups (no parent task)
+- **Synthetic containers** — GROUP/CHORD nodes are always created when 2+ tasks share a `group_id`
+- **Parent linking** — When spawned from a parent task, the container becomes a child of that parent
+- **Chord callbacks** — Rendered outside the container with edges from each header task
 - **Timing** — Each node displays start time and duration directly in the graph
-- **Aggregate state** — GROUP shows running/success/failure based on member states
-
-When a parent task spawns a group, the parent serves as the visual group:
-
-```python
-@app.task
-def my_workflow():
-    # The 3 add tasks will be visualized as children of my_workflow
-    group(task_a.s(), task_b.s(), task_c.s()).apply_async()
-```
+- **Aggregate state** — Container shows running/success/failure based on member states
 
 ### Environment Variables
 

@@ -375,7 +375,7 @@ test.describe('Edge Visibility Regression Tests', () => {
     // These are graphs where a parent task spawns a group
     const parentGraphLink = page
       .locator('a[href*="/graph/"]')
-      .filter({ hasText: /parallel_group|workflow/ })
+      .filter({ hasText: /batch_processor|workflow/ })
       .first()
 
     const hasParentGraph = await parentGraphLink.isVisible().catch(() => false)
