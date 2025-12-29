@@ -104,7 +104,7 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
         chord_id: str | None = None
         retries: int = 0
 
-        if isinstance(body, (list, tuple)) and len(body) >= 3:
+        if isinstance(body, list | tuple) and len(body) >= 3:
             # Old format: (args, kwargs, embed)
             embed = body[2] if len(body) > 2 else {}
             if isinstance(embed, dict):

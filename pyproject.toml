@@ -147,6 +147,7 @@ known-first-party = ["celery_flow"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["D", "ARG"]  # No docstrings required in tests
+"examples/**/*.py" = ["ARG001", "D417"]  # bind=True tasks have unused self
 
 # =============================================================================
 # pytest

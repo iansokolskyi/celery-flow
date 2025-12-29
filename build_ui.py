@@ -14,9 +14,11 @@ class CustomBuildHook(BuildHookInterface):
 
     PLUGIN_NAME = "custom"
 
-    def initialize(self, version: str, build_data: dict[str, Any]) -> None:
+    def initialize(self, _version: str, _build_data: dict[str, Any]) -> None:
         """Run npm install and build for the frontend."""
-        frontend_dir = Path(self.root) / "src" / "celery_flow" / "server" / "ui" / "frontend"
+        frontend_dir = (
+            Path(self.root) / "src" / "celery_flow" / "server" / "ui" / "frontend"
+        )
         dist_dir = frontend_dir / "dist"
 
         if not frontend_dir.exists():
@@ -50,4 +52,3 @@ class CustomBuildHook(BuildHookInterface):
         )
 
         self.app.display_success("Frontend build complete!")
-

@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.5.0
+    rev: v5.0.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
@@ -11,7 +11,7 @@ repos:
       - id: debug-statements
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.1.9
+    rev: v0.8.6
     hooks:
       # Linter
       - id: ruff
@@ -19,13 +19,5 @@ repos:
       # Formatter
       - id: ruff-format
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.8.0
-    hooks:
-      - id: mypy
-        args: [--strict]
-        additional_dependencies:
-          - types-redis>=4.0.0
-        pass_filenames: false
-        entry: mypy src/
-
+# Note: mypy is run via `make check` with project dependencies installed.
+# Running mypy in pre-commit's isolated environment doesn't work for typed projects.
