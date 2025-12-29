@@ -1,4 +1,4 @@
-.PHONY: install check types lint format test coverage clean ui-install ui-dev ui-build e2e e2e-api e2e-playwright
+.PHONY: install check types lint format test coverage clean ui-install ui-dev ui-build e2e e2e-api e2e-playwright build release-check version bump-dry bump-patch bump-minor bump-major
 
 # Install all dependencies
 install:
@@ -86,6 +86,35 @@ ui-fix:
 	cd $(FRONTEND_DIR) && npm run fix
 
 # =============================================================================
+# Build & Release
+# =============================================================================
+# Build package locally (verify before release)
+build:
+	rm -rf dist/
+	uv run python -m build
+	uv run twine check dist/*
+	@echo "✅ Build successful. Files in dist/"
+	@ls -la dist/
+
+# Full pre-release checklist
+release-check:
+	@echo "=== Pre-release Checklist ==="
+	@echo "1. Running all checks..."
+	$(MAKE) check
+	@echo ""
+	@echo "2. Building package..."
+	$(MAKE) build
+	@echo ""
+	@echo "✅ Ready to release!"
+	@echo ""
+	@echo "Release workflow (fully automated):"
+	@echo "  1. git checkout -b release/vX.Y.Z"
+	@echo "  2. make bump-patch (or bump-minor/bump-major)"
+	@echo "  3. git push -u origin release/vX.Y.Z"
+	@echo "  4. gh pr create --title 'chore: release vX.Y.Z'"
+	@echo "  5. Merge PR → auto-tags → auto-releases to PyPI + Docker"
+
+# =============================================================================
 # Versioning (bump-my-version)
 # =============================================================================
 # Show current version
@@ -99,14 +128,26 @@ bump-dry:
 # Bump patch version (0.1.0 -> 0.1.1)
 bump-patch:
 	uv run bump-my-version bump patch
+	@NEW_VER=$$(uv run bump-my-version show current_version); \
+	echo "✅ Version bumped to $$NEW_VER"; \
+	echo ""; \
+	echo "Next: git push -u origin HEAD && gh pr create --title 'chore: release v$$NEW_VER'"
 
 # Bump minor version (0.1.0 -> 0.2.0)
 bump-minor:
 	uv run bump-my-version bump minor
+	@NEW_VER=$$(uv run bump-my-version show current_version); \
+	echo "✅ Version bumped to $$NEW_VER"; \
+	echo ""; \
+	echo "Next: git push -u origin HEAD && gh pr create --title 'chore: release v$$NEW_VER'"
 
 # Bump major version (0.1.0 -> 1.0.0)
 bump-major:
 	uv run bump-my-version bump major
+	@NEW_VER=$$(uv run bump-my-version show current_version); \
+	echo "✅ Version bumped to $$NEW_VER"; \
+	echo ""; \
+	echo "Next: git push -u origin HEAD && gh pr create --title 'chore: release v$$NEW_VER'"
 
 # =============================================================================
 # E2E Testing

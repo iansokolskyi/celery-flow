@@ -28,3 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Docker support**: Multi-stage Dockerfile, docker-compose.yml for local dev
 - **E2E test suite**: Docker API tests + Playwright browser tests
 - **Comprehensive test suite**: 350+ Python tests, 90%+ coverage
+
+[unreleased]: https://github.com/iansokolskyi/celery-flow/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/iansokolskyi/celery-flow/releases/tag/v0.1.0
