@@ -132,16 +132,15 @@ def workflow_example(self) -> str:
 # =============================================================================
 
 
-@app.task(bind=True, name="examples.celery_app.parallel_group")
-def parallel_group(self) -> str:
-    """Run a group of parallel tasks.
+@app.task(bind=True, name="examples.celery_app.batch_processor")
+def batch_processor(self) -> str:
+    """Process items in parallel using a group.
 
     Creates a synthetic GROUP node in the graph with 3 child add tasks.
-    Tasks sharing a group_id are automatically grouped under a single
-    visual parent with aggregate state.
+    The GROUP becomes a child of this task, showing the parent→GROUP→tasks hierarchy.
     """
     result = group(add.s(1, 2), add.s(3, 4), add.s(5, 6)).apply_async()
-    return f"Started parallel group: {result.id}"
+    return f"Started batch processing: {result.id}"
 
 
 # =============================================================================
@@ -256,7 +255,7 @@ def run_demo(demo_name: str) -> None:
     """Run a specific demo by name."""
     demos = {
         "workflow": lambda: workflow_example.delay(),
-        "group": lambda: parallel_group.delay(),
+        "group": lambda: batch_processor.delay(),
         "standalone-group": lambda: group(
             add.s(1, 1), add.s(2, 2), add.s(3, 3)
         ).apply_async(),

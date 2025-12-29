@@ -105,8 +105,8 @@ class TaskGraph(BaseModel):
     def _track_group_member(self, task_id: str, group_id: str) -> None:
         """Track task as member of a group and create synthetic node if needed.
 
-        Only creates a synthetic GROUP node when grouped tasks are standalone (no parent task).
-        If tasks already share a common parent, that parent visualizes the group.
+        Creates a synthetic GROUP node when 2+ tasks share a group_id.
+        If tasks share a common parent, the GROUP becomes a child of that parent.
         Skips adding callback tasks (they're outside the group container).
         """
         # Check if this task is the callback for a CHORD - link but don't add to members
