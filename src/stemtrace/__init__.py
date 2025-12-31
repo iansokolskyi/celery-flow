@@ -26,7 +26,7 @@ from stemtrace.library.transports import get_transport as _get_transport
 if TYPE_CHECKING:
     from celery import Celery
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __all__ = [
     "ConfigurationError",
     "StemtraceConfig",
