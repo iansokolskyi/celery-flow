@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2025-12-31
+
+### Added
+- Python 3.14 support in CI and project classifiers
+- Mock-based E2E testing mode (no Docker required for local dev)
+- Codecov integration for coverage reporting
+
+### Changed
+- Upgraded React and React-DOM to v19
+- Upgraded @tanstack/react-query to latest
+- Updated GitHub Actions to v6 (checkout, setup-python, setup-node, upload/download-artifact)
+- Improved README with clearer Quick Start and FastAPI embedding docs
+
 ## [0.1.0] - 2025-12-27
 
 ### Added
@@ -29,5 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E test suite**: Docker API tests + Playwright browser tests
 - **Comprehensive test suite**: 350+ Python tests, 90%+ coverage
 
-[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.1.0...HEAD
+[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/iansokolskyi/stemtrace/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/iansokolskyi/stemtrace/releases/tag/v0.1.0
