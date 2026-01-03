@@ -1,5 +1,6 @@
 """Integration tests for static UI serving."""
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -365,3 +366,35 @@ class TestDeploymentModes:
             # API at /stemtrace/api/ should work
             api_response = client.get("/stemtrace/api/health")
             assert api_response.status_code == 200
+
+
+class TestStemtraceBaseInjectionEscaping:
+    """Regression tests for safe __STEMTRACE_BASE__ injection into index.html."""
+
+    def test_injected_base_is_json_escaped_and_cannot_terminate_script(
+        self, tmp_path: Path
+    ) -> None:
+        """Injected prefix must be a JS expression produced via JSON serialization."""
+        dist_dir = tmp_path / "dist"
+        dist_dir.mkdir()
+        (dist_dir / "assets").mkdir()
+        (dist_dir / "index.html").write_text(
+            "<html><head></head><body>OK</body></html>"
+        )
+
+        # This would terminate the script tag if injected unescaped.
+        dangerous_prefix = "/stemtrace</script><script>window.__PWNED__=true</script>"
+
+        with patch("stemtrace.server.ui.static._FRONTEND_DIR", dist_dir):
+            router = get_static_router_with_base(dangerous_prefix)
+            assert router is not None
+
+            app = FastAPI()
+            app.include_router(router)
+            client = TestClient(app)
+
+            resp = client.get("/")
+            assert resp.status_code == 200
+
+            expected_js = json.dumps(dangerous_prefix).replace("</", "<\\/")
+            assert f"window.__STEMTRACE_BASE__={expected_js};" in resp.text

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -27,8 +28,12 @@ def _rewrite_html_for_prefix(
     if prefix and rewrite_assets:
         html = html.replace('"/assets/', f'"{prefix}/assets/')
         html = html.replace("'/assets/", f"'{prefix}/assets/")
+    # Inject base path safely. The prefix may be user-provided (e.g. init_app(prefix=...))
+    # or derived from a request path, so it must be serialized as a JS string literal.
+    # Also, prevent `</script>` inside the string from terminating the script tag.
+    prefix_js = json.dumps(prefix).replace("</", "<\\/")
     return html.replace(
-        "<head>", f'<head><script>window.__STEMTRACE_BASE__="{prefix}";</script>'
+        "<head>", f"<head><script>window.__STEMTRACE_BASE__={prefix_js};</script>"
     )
 
 
