@@ -36,6 +36,15 @@ export interface MockEvent {
   retry_count: number
 }
 
+export interface MockWorker {
+  hostname: string
+  pid: number
+  registered_tasks: string[]
+  status: 'online' | 'offline'
+  registered_at: string
+  last_seen: string
+}
+
 /**
  * Generate a UUID-like task ID
  */
@@ -390,6 +399,10 @@ export const DEFAULT_REGISTRY = [
     docstring: 'Add two numbers together.',
     module: 'tasks',
     bound: false,
+    execution_count: 5,
+    registered_by: ['worker-1'],
+    last_run: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+    status: 'active',
   },
   {
     name: 'tasks.multiply',
@@ -397,6 +410,10 @@ export const DEFAULT_REGISTRY = [
     docstring: 'Multiply two numbers together.',
     module: 'tasks',
     bound: false,
+    execution_count: 3,
+    registered_by: ['worker-1', 'worker-2'],
+    last_run: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+    status: 'active',
   },
   {
     name: 'tasks.process_item',
@@ -404,6 +421,10 @@ export const DEFAULT_REGISTRY = [
     docstring: 'Process a single item.',
     module: 'tasks',
     bound: false,
+    execution_count: 10,
+    registered_by: ['worker-1'],
+    last_run: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+    status: 'active',
   },
   {
     name: 'tasks.aggregate',
@@ -411,6 +432,10 @@ export const DEFAULT_REGISTRY = [
     docstring: 'Aggregate multiple items.',
     module: 'tasks',
     bound: false,
+    execution_count: 2,
+    registered_by: ['worker-2'],
+    last_run: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+    status: 'active',
   },
   {
     name: 'tasks.batch_processor',
@@ -418,6 +443,10 @@ export const DEFAULT_REGISTRY = [
     docstring: 'Process a batch of items.',
     module: 'tasks',
     bound: false,
+    execution_count: 0,
+    registered_by: ['worker-1'],
+    last_run: null,
+    status: 'never_run',
   },
   {
     name: 'tasks.always_fails',
@@ -425,5 +454,43 @@ export const DEFAULT_REGISTRY = [
     docstring: 'A task that always fails.',
     module: 'tasks',
     bound: false,
+    execution_count: 15,
+    registered_by: [],
+    last_run: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+    status: 'not_registered',
+  },
+]
+
+/**
+ * Workers mock data
+ */
+export const DEFAULT_WORKERS: MockWorker[] = [
+  {
+    hostname: 'worker-1',
+    pid: 12345,
+    registered_tasks: [
+      'tasks.add',
+      'tasks.multiply',
+      'tasks.process_item',
+      'tasks.aggregate',
+      'tasks.batch_processor',
+      'tasks.always_fails',
+      'tasks.workflow.step_1',
+      'tasks.workflow.step_2',
+      'tasks.workflow.step_3',
+      'tasks.extra_1',
+      'tasks.extra_2',
+    ],
+    status: 'online',
+    registered_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+    last_seen: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+  },
+  {
+    hostname: 'worker-2',
+    pid: 67890,
+    registered_tasks: ['tasks.add'],
+    status: 'offline',
+    registered_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+    last_seen: new Date(Date.now() - 65 * 60 * 1000).toISOString(),
   },
 ]

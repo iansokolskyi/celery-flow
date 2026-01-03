@@ -17,11 +17,21 @@
 
 import type { Page, Route } from '@playwright/test'
 
-import { createSuccessTask, DEFAULT_REGISTRY, DEFAULT_TASKS, type MockTask } from './mock-data'
+import {
+  createSuccessTask,
+  DEFAULT_REGISTRY,
+  DEFAULT_TASKS,
+  DEFAULT_WORKERS,
+  type MockTask,
+  type MockWorker,
+} from './mock-data'
 
 export interface MockApiContext {
   /** All tasks in the mock store */
   tasks: MockTask[]
+
+  /** All workers in the mock store */
+  workers: MockWorker[]
 
   /** Add a task to the mock store */
   addTask: (task: MockTask) => void
@@ -40,6 +50,12 @@ export interface MockApiContext {
 
   /** Get root tasks (for graphs list) */
   getRootTasks: () => MockTask[]
+
+  /** Replace all workers */
+  setWorkers: (workers: MockWorker[]) => void
+
+  /** Clear all workers */
+  clearWorkers: () => void
 
   /** Stop intercepting (cleanup) */
   teardown: () => Promise<void>
@@ -96,10 +112,15 @@ export async function setupMockApi(
 
   // Mutable task store
   let tasks: MockTask[] = useDefaults ? [...DEFAULT_TASKS] : []
+  let workers: MockWorker[] = useDefaults ? [...DEFAULT_WORKERS] : []
 
   const context: MockApiContext = {
     get tasks() {
       return tasks
+    },
+
+    get workers() {
+      return workers
     },
 
     addTask(task: MockTask) {
@@ -116,6 +137,7 @@ export async function setupMockApi(
 
     resetToDefaults() {
       tasks = [...DEFAULT_TASKS]
+      workers = [...DEFAULT_WORKERS]
     },
 
     getTask(taskId: string) {
@@ -125,6 +147,14 @@ export async function setupMockApi(
     getRootTasks() {
       // Root tasks are those where task_id === root_id
       return tasks.filter((t) => t.task_id === t.root_id)
+    },
+
+    setWorkers(newWorkers: MockWorker[]) {
+      workers = [...newWorkers]
+    },
+
+    clearWorkers() {
+      workers = []
     },
 
     async teardown() {
@@ -185,6 +215,44 @@ export async function setupMockApi(
       body: JSON.stringify({
         tasks: DEFAULT_REGISTRY,
         total: DEFAULT_REGISTRY.length,
+      }),
+    })
+  })
+
+  // Workers list: GET /workers and /workers?...
+  await page.route(new RegExp(`${apiPath}/workers(\\?|$)`), async (route: Route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue()
+      return
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        workers,
+        total: workers.length,
+      }),
+    })
+  })
+
+  // Worker detail: GET /workers/:hostname
+  await page.route(new RegExp(`${apiPath}/workers/[^/]+$`), async (route: Route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue()
+      return
+    }
+
+    const url = route.request().url()
+    const hostname = decodeURIComponent(url.split('/workers/').pop()?.split('?')[0] || '')
+    const filtered = workers.filter((w) => w.hostname === hostname)
+
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        workers: filtered,
+        total: filtered.length,
       }),
     })
   })

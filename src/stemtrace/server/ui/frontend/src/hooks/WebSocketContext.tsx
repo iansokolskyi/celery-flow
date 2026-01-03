@@ -25,10 +25,16 @@ interface WebSocketContextValue {
 
 const WebSocketContext = createContext<WebSocketContextValue | null>(null)
 
-// WebSocket URL
-const WS_URL = import.meta.env.DEV
-  ? `ws://${window.location.hostname}:8000/stemtrace/ws`
-  : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/stemtrace/ws`
+// WebSocket URL: use injected base path in production
+const getWsUrl = (): string => {
+  const base = window.__STEMTRACE_BASE__ ?? '/stemtrace'
+  if (import.meta.env.DEV) {
+    return `ws://${window.location.hostname}:8000${base}/ws`
+  }
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${protocol}//${window.location.host}${base}/ws`
+}
+const WS_URL = getWsUrl()
 
 // Reconnect interval when disconnected (3 seconds for quick recovery)
 const RECONNECT_INTERVAL = 3000
@@ -72,8 +78,16 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
           setEvents((prev) => [data, ...prev].slice(0, 100)) // Keep last 100
 
           // Invalidate queries to refresh data
+          // Invalidate both regular and infinite queries
           queryClient.invalidateQueries({ queryKey: ['tasks'] })
+          queryClient.invalidateQueries({ queryKey: ['tasks-infinite'] })
           queryClient.invalidateQueries({ queryKey: ['graphs'] })
+          queryClient.invalidateQueries({ queryKey: ['graphs-infinite'] })
+
+          // Also invalidate the specific task detail if we have the task_id
+          if (data.task_id) {
+            queryClient.invalidateQueries({ queryKey: ['tasks', data.task_id] })
+          }
         } catch (e) {
           console.error('[WebSocket] Failed to parse message:', e)
         }
