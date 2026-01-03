@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Task Registry now includes task definition metadata from workers (module, signature, docstring, bound)
+
+### Changed
+- README: updated PyPI badge styling
+- CI: upload Codecov coverage on `main`
+
 ## [0.2.0] - 2026-01-03
 
 ### Added
