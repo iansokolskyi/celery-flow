@@ -79,7 +79,7 @@ uv run pytest
 uv run pytest --cov=stemtrace --cov-report=term-missing
 ```
 
-**Coverage requirement:** 80% minimum
+**Coverage requirement:** 95% minimum
 
 ### Updating Dependencies
 
