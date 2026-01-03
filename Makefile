@@ -36,7 +36,7 @@ format:
 	uv run ruff check --fix src/ tests/
 
 test:
-	uv run pytest --cov=stemtrace --cov-report=term-missing --cov-fail-under=80
+	uv run pytest --cov=stemtrace --cov-report=term-missing --cov-fail-under=95
 
 # Run tests without coverage (faster iteration)
 test-fast:
@@ -170,7 +170,7 @@ e2e-mock:
 e2e-up:
 	docker compose -f docker-compose.e2e.yml up -d --wait
 	@echo "Waiting for services..."
-	@timeout 60 bash -c 'until curl -sf http://localhost:8000/stemtrace/api/health -o /dev/null; do sleep 2; done' || true
+	@timeout 60 bash -c 'until curl -sf http://localhost:8000/stemtrace/api/health -o /dev/null; do sleep 2; done' || (echo "❌ Service failed to become healthy"; exit 1)
 	@echo "✅ E2E environment ready at http://localhost:8000"
 
 # Stop E2E test environment

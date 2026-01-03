@@ -102,12 +102,16 @@ class TestWorkersLifecycleE2E:
             "redis://localhost:16379/0", decode_responses=False
         )
         stream_key = "stemtrace:events"
-
-        event = _wait_for_worker_ready_in_redis(redis_client, stream_key, timeout=45.0)
-        assert event["event_type"] == "worker_ready"
-        assert isinstance(event.get("hostname"), str)
-        assert isinstance(event.get("pid"), int)
-        # Should include at least one E2E task
-        tasks = event.get("registered_tasks") or []
-        assert isinstance(tasks, list)
-        assert any(t == "e2e.add" for t in tasks)
+        try:
+            event = _wait_for_worker_ready_in_redis(
+                redis_client, stream_key, timeout=45.0
+            )
+            assert event["event_type"] == "worker_ready"
+            assert isinstance(event.get("hostname"), str)
+            assert isinstance(event.get("pid"), int)
+            # Should include at least one E2E task
+            tasks = event.get("registered_tasks") or []
+            assert isinstance(tasks, list)
+            assert any(t == "e2e.add" for t in tasks)
+        finally:
+            redis_client.close()

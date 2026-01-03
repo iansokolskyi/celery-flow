@@ -6,6 +6,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
 from typing_extensions import Self
 
 from stemtrace.core.events import TaskEvent, WorkerEvent
@@ -100,7 +101,16 @@ class RedisTransport:
                     data = fields.get(b"data") or fields.get("data")
                     if data:
                         data_str = data.decode() if isinstance(data, bytes) else data
-                        yield self._parse_event(data_str)
+                        try:
+                            yield self._parse_event(data_str)
+                        except (json.JSONDecodeError, ValidationError, ValueError):
+                            logger.warning(
+                                "Failed to parse event from Redis stream %s at id %s",
+                                self._stream_key,
+                                current_id,
+                                exc_info=True,
+                            )
+                            continue
 
     def _parse_event(self, data_str: str) -> StreamEvent:
         """Parse JSON into appropriate event type."""
@@ -109,8 +119,10 @@ class RedisTransport:
         if "event_type" in parsed:
             # WorkerEvent has event_type field
             return WorkerEvent.model_validate(parsed)
-        # TaskEvent has task_id field
-        return TaskEvent.model_validate(parsed)
+        if "task_id" in parsed:
+            # TaskEvent has task_id field
+            return TaskEvent.model_validate(parsed)
+        raise ValueError("Unknown event payload: missing event_type and task_id")
 
     @classmethod
     def from_url(cls, url: str, prefix: str = "stemtrace", ttl: int = 86400) -> Self:

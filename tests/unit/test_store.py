@@ -998,6 +998,11 @@ class TestWorkerRegistry:
         assert "myapp.tasks.process" in tasks
         assert "myapp.tasks.analyze" in tasks
 
+        # Returned list should be a copy: external mutation must not affect registry state.
+        tasks.append("evil.mutate")
+        tasks2 = registry.get_registered_tasks("worker-1.example.com", 12345)
+        assert "evil.mutate" not in tasks2
+
     def test_get_all_workers_empty(self, registry: WorkerRegistry) -> None:
         """Getting all workers when none registered returns empty list."""
         workers = registry.get_all_workers()
@@ -1060,6 +1065,27 @@ class TestWorkerRegistry:
         worker = registry.get_worker("worker-1.example.com", 12345)
         assert worker is not None
         assert worker.status == WorkerStatus.OFFLINE
+
+    def test_mark_online_updates_status_and_last_seen(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """Marking an existing worker as online updates status and last_seen."""
+        registry.register_worker(
+            hostname="worker-1.example.com",
+            pid=12345,
+            tasks=["myapp.tasks.send"],
+        )
+        registry.mark_shutdown("worker-1.example.com", 12345)
+
+        before = registry.get_worker("worker-1.example.com", 12345)
+        assert before is not None
+        before_last_seen = before.last_seen
+
+        registry.mark_online("worker-1.example.com", 12345)
+        after = registry.get_worker("worker-1.example.com", 12345)
+        assert after is not None
+        assert after.status == WorkerStatus.ONLINE
+        assert after.last_seen >= before_last_seen
 
     def test_get_registered_tasks_after_shutdown(
         self, registry: WorkerRegistry

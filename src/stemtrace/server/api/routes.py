@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import contextlib
-from datetime import datetime, timezone
+from datetime import datetime  # noqa: TC003  # FastAPI evaluates annotations at runtime
 from typing import TYPE_CHECKING, Annotated
 
 from celery import Celery
-from celery.app.control import Inspect
 from fastapi import APIRouter, HTTPException, Query
 
 from stemtrace.server.api.schemas import (
@@ -25,7 +24,6 @@ from stemtrace.server.api.schemas import (
     TaskStatus,
     WorkerListResponse,
     WorkerResponse,
-    WorkerStatus,
 )
 
 if TYPE_CHECKING:
@@ -162,12 +160,13 @@ def _refresh_worker_status(
         hostname = worker_key.split("@")[1] if "@" in worker_key else worker_key
         active_hostnames.add(hostname)
 
-    # Update registry: mark workers ONLINE if active in Celery
+    # Update registry: mark workers ONLINE if active in Celery.
+    # Note: Never mutate WorkerInfo objects returned from get_all_workers() since
+    # that bypasses WorkerRegistry locking and can race with the consumer thread.
     workers = worker_registry.get_all_workers()
     for worker in workers:
         if worker.hostname in active_hostnames:
-            worker.status = WorkerStatus.ONLINE
-            worker.last_seen = datetime.now(timezone.utc)
+            worker_registry.mark_online(worker.hostname, worker.pid)
 
 
 def create_api_router(

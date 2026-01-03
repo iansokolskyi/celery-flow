@@ -12,9 +12,13 @@ import { setupMockApi } from './fixtures/mock-api'
 const isRealMode = process.env.E2E_MODE === 'real'
 
 test.describe('Workers Page', () => {
+  let mockApi: Awaited<ReturnType<typeof setupMockApi>> | null = null
+
   test.beforeEach(async ({ page }) => {
     if (!isRealMode) {
-      await setupMockApi(page)
+      mockApi = await setupMockApi(page)
+    } else {
+      mockApi = null
     }
     await page.goto('/workers')
   })
@@ -51,10 +55,8 @@ test.describe('Workers Page', () => {
       return
     }
 
-    const mockApi = await setupMockApi(page, { useDefaults: false })
-    mockApi.clearWorkers()
-
-    await page.goto('/workers')
+    mockApi?.clearWorkers()
+    await page.reload()
     await page.waitForLoadState('networkidle')
 
     await expect(page.getByText('No workers registered')).toBeVisible()

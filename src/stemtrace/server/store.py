@@ -163,6 +163,25 @@ class WorkerRegistry:
             if worker_id in self._workers:
                 self._workers[worker_id].status = WorkerStatus.OFFLINE
 
+    def mark_online(self, hostname: str, pid: int) -> None:
+        """Mark a worker as online and update its last_seen timestamp.
+
+        This is used by on-demand refresh operations (e.g., Celery inspect) to
+        avoid mutating WorkerInfo outside of the registry lock.
+
+        Args:
+            hostname: Worker hostname.
+            pid: Worker process ID.
+        """
+        with self._lock:
+            worker_id = f"{hostname}:{pid}"
+            worker = self._workers.get(worker_id)
+            if worker is None:
+                return
+
+            worker.status = WorkerStatus.ONLINE
+            worker.last_seen = datetime.now(timezone.utc)
+
     def get_registered_tasks(self, hostname: str, pid: int) -> list[str]:
         """Get registered tasks for a specific worker.
 
@@ -177,7 +196,9 @@ class WorkerRegistry:
             worker_id = f"{hostname}:{pid}"
             worker = self._workers.get(worker_id)
             if worker:
-                return worker.registered_tasks
+                # Return a copy to prevent callers mutating internal state after
+                # the lock is released.
+                return list(worker.registered_tasks)
         return []
 
     def get_all_workers(self) -> list[WorkerInfo]:

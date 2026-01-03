@@ -495,7 +495,7 @@ def _extract_registered_tasks(sender: Any) -> list[str]:
     return task_names
 
 
-def on_worker_ready(sender: "Task", **_: Any) -> None:
+def on_worker_ready(sender: Any, **_: Any) -> None:
     """Handle worker_ready signal - publish worker registration event.
 
     Celery sends this when worker starts and loads all registered tasks.
