@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Workers API endpoints: `GET /api/workers` and `GET /api/workers/{hostname}`
+- Worker lifecycle tracking via `worker_ready` / `worker_shutdown` events to maintain a live worker registry
+- Workers UI page for inspecting online/offline workers and their registered tasks
+- Task Registry now shows which workers registered each task (`registered_by`)
+
 ## [0.1.1] - 2025-12-31
 
 ### Added
