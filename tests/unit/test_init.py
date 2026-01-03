@@ -32,7 +32,7 @@ def cleanup() -> None:
 
 def test_version() -> None:
     """Version is set."""
-    assert __version__ == "0.1.1"
+    assert __version__ == "0.2.0"
 
 
 class TestInit:
