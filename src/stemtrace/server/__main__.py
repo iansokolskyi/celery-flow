@@ -18,7 +18,7 @@ def server(
         typer.Option(
             "--broker-url",
             "-b",
-            envvar="CELERY_FLOW_BROKER_URL",
+            envvar="STEMTRACE_BROKER_URL",
             help="Broker URL (default: redis://localhost:6379/0)",
         ),
     ] = "redis://localhost:6379/0",
@@ -44,7 +44,7 @@ def server(
     typer.echo(f"Starting stemtrace server on {host}:{port}")
     typer.echo(f"Broker: {broker_url}")
 
-    from stemtrace.server.ui.static import get_static_router
+    from stemtrace.server.ui.static import get_static_router_with_base
 
     # Create extension without UI (we'll serve UI at root separately)
     extension = StemtraceExtension(broker_url=broker_url, serve_ui=False)
@@ -56,8 +56,8 @@ def server(
     # API and WebSocket at /stemtrace (frontend expects this path)
     fastapi_app.include_router(extension.router, prefix="/stemtrace")
 
-    # UI at root for standalone CLI
-    ui_router = get_static_router()
+    # UI at root with explicit base path pointing to API
+    ui_router = get_static_router_with_base("/stemtrace")
     if ui_router is not None:
         fastapi_app.include_router(ui_router)
 
@@ -71,7 +71,7 @@ def consume(
         typer.Option(
             "--broker-url",
             "-b",
-            envvar="CELERY_FLOW_BROKER_URL",
+            envvar="STEMTRACE_BROKER_URL",
             help="Broker URL (default: redis://localhost:6379/0)",
         ),
     ] = "redis://localhost:6379/0",

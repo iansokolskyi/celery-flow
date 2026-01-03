@@ -6,17 +6,17 @@ from typing import TYPE_CHECKING, Protocol
 from typing_extensions import Self
 
 if TYPE_CHECKING:
-    from stemtrace.core.events import TaskEvent
+    from stemtrace.core.events import TaskEvent, WorkerEvent
 
 
 class EventTransport(Protocol):
     """Broker-agnostic transport. publish() must be fire-and-forget (never raise)."""
 
-    def publish(self, event: "TaskEvent") -> None:
+    def publish(self, event: "TaskEvent | WorkerEvent") -> None:
         """Publish event. Fire-and-forget: log errors, don't raise."""
         ...
 
-    def consume(self) -> Iterator["TaskEvent"]:
+    def consume(self) -> Iterator["TaskEvent | WorkerEvent"]:
         """Yield events as they arrive. May block waiting for new events."""
         ...
 

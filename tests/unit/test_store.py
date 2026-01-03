@@ -5,8 +5,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from stemtrace.core.events import TaskEvent, TaskState
-from stemtrace.core.graph import NodeType
-from stemtrace.server.store import GraphStore
+from stemtrace.core.graph import NodeType, TaskNode
+from stemtrace.server.api.schemas import WorkerStatus
+from stemtrace.server.store import GraphStore, WorkerRegistry
 
 
 @pytest.fixture
@@ -650,10 +651,14 @@ class TestGraphStoreSyntheticNodes:
         root_ids = [r.task_id for r in roots]
         assert f"group:{group_id}" in root_ids
 
-    def test_get_nodes_with_synthetic_group(
+    def test_get_nodes_excludes_synthetic_group(
         self, store: GraphStore, make_event: type
     ) -> None:
-        """get_nodes should handle synthetic nodes with no events."""
+        """get_nodes should exclude synthetic GROUP/CHORD nodes.
+
+        Synthetic nodes are for graph visualization only, not for the
+        Tasks tab which lists actual task executions.
+        """
         group_id = "test-group-2"
         store.add_event(
             TaskEvent(
@@ -674,9 +679,109 @@ class TestGraphStoreSyntheticNodes:
             )
         )
 
-        # Should not raise TypeError
-        nodes, _ = store.get_nodes()
-        assert len(nodes) == 3  # 2 tasks + 1 synthetic group
+        # Verify synthetic node was created
+        group_node = store.get_node(f"group:{group_id}")
+        assert group_node is not None
+        assert group_node.node_type == NodeType.GROUP
+
+        # get_nodes should exclude synthetic nodes
+        nodes, total = store.get_nodes()
+        assert len(nodes) == 2  # Only real tasks, not the synthetic group
+        assert total == 2
+        node_ids = [n.task_id for n in nodes]
+        assert f"group:{group_id}" not in node_ids
+
+    def test_get_unique_task_names_excludes_synthetic_nodes(
+        self, store: GraphStore, make_event: type
+    ) -> None:
+        """get_unique_task_names should exclude synthetic node names.
+
+        Synthetic nodes have names like 'group' or 'chord' which should
+        not appear in the Registry tab.
+        """
+        group_id = "registry-test-group"
+        store.add_event(
+            TaskEvent(
+                task_id="task-1",
+                name="myapp.real_task",
+                state=TaskState.SUCCESS,
+                timestamp=make_event._base_time,
+                group_id=group_id,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="task-2",
+                name="myapp.real_task",
+                state=TaskState.SUCCESS,
+                timestamp=make_event._base_time,
+                group_id=group_id,
+            )
+        )
+
+        # Verify synthetic node was created
+        group_node = store.get_node(f"group:{group_id}")
+        assert group_node is not None
+        assert group_node.name == "group"
+
+        # get_unique_task_names should exclude synthetic names
+        task_names = store.get_unique_task_names()
+        assert "myapp.real_task" in task_names
+        assert "group" not in task_names
+        assert "chord" not in task_names
+
+    def test_get_nodes_excludes_synthetic_chord(
+        self, store: GraphStore, make_event: type
+    ) -> None:
+        """get_nodes should exclude CHORD nodes as well as GROUP nodes."""
+        group_id = "chord-test-group"
+        callback_id = "callback-task"
+
+        # Create header tasks in chord
+        store.add_event(
+            TaskEvent(
+                task_id="header-1",
+                name="myapp.header_task",
+                state=TaskState.SUCCESS,
+                timestamp=make_event._base_time,
+                group_id=group_id,
+                chord_callback_id=callback_id,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="header-2",
+                name="myapp.header_task",
+                state=TaskState.SUCCESS,
+                timestamp=make_event._base_time,
+                group_id=group_id,
+            )
+        )
+
+        # Create callback task
+        store.add_event(
+            TaskEvent(
+                task_id=callback_id,
+                name="myapp.callback_task",
+                state=TaskState.SUCCESS,
+                timestamp=make_event._base_time,
+            )
+        )
+
+        # Verify CHORD node was created
+        chord_node = store.get_node(f"group:{group_id}")
+        assert chord_node is not None
+        assert chord_node.node_type == NodeType.CHORD
+        assert chord_node.name == "chord"
+
+        # get_nodes should exclude the CHORD synthetic node
+        nodes, total = store.get_nodes()
+        assert total == 3  # header-1, header-2, callback - no CHORD
+        node_ids = [n.task_id for n in nodes]
+        assert f"group:{group_id}" not in node_ids
+        assert "header-1" in node_ids
+        assert "header-2" in node_ids
+        assert callback_id in node_ids
 
     def test_eviction_with_synthetic_nodes(self, make_event: type) -> None:
         """Eviction sorting should handle synthetic nodes."""
@@ -822,3 +927,612 @@ class TestGraphStoreSyntheticNodes:
         # Group should now be first
         roots, _ = store.get_root_nodes()
         assert roots[0].task_id == f"group:{group_id}"
+
+
+class TestWorkerRegistry:
+    """Tests for WorkerRegistry worker lifecycle tracking."""
+
+    @pytest.fixture
+    def registry(self) -> WorkerRegistry:
+        """Create fresh WorkerRegistry for each test."""
+        return WorkerRegistry()
+
+    def test_register_new_worker(self, registry: WorkerRegistry) -> None:
+        """Register a new worker with task list."""
+        registry.register_worker(
+            hostname="worker-1.example.com",
+            pid=12345,
+            tasks=["myapp.tasks.send", "myapp.tasks.process"],
+        )
+
+        worker = registry.get_worker("worker-1.example.com", 12345)
+        assert worker is not None
+        assert worker.hostname == "worker-1.example.com"
+        assert worker.pid == 12345
+        assert len(worker.registered_tasks) == 2
+        assert "myapp.tasks.send" in worker.registered_tasks
+        assert "myapp.tasks.process" in worker.registered_tasks
+        assert worker.status == WorkerStatus.ONLINE
+        assert isinstance(worker.registered_at, datetime)
+
+    def test_register_existing_worker_updates(self, registry: WorkerRegistry) -> None:
+        """Re-registering an existing worker should update its state."""
+        registry.register_worker(
+            hostname="worker-1.example.com",
+            pid=12345,
+            tasks=["myapp.tasks.send"],
+        )
+
+        # Wait a bit
+        import time
+
+        time.sleep(0.01)
+
+        # Re-register with new PID (simulated restart)
+        registry.register_worker(
+            hostname="worker-1.example.com",
+            pid=54321,
+            tasks=["myapp.tasks.send", "myapp.tasks.process"],
+        )
+
+        worker = registry.get_worker("worker-1.example.com", 54321)
+        assert worker.pid == 54321
+        assert worker.status == WorkerStatus.ONLINE  # Should still be online
+
+    def test_register_same_worker_id_updates_in_place(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """Re-registering the same hostname+pid should update that worker entry."""
+        ts1 = datetime(2024, 1, 1, tzinfo=UTC)
+        ts2 = datetime(2024, 1, 1, 0, 0, 10, tzinfo=UTC)
+
+        registry.register_worker(
+            hostname="worker-1.example.com",
+            pid=12345,
+            tasks=["task.a"],
+            event_timestamp=ts1,
+        )
+        registry.register_worker(
+            hostname="worker-1.example.com",
+            pid=12345,
+            tasks=["task.b"],
+            event_timestamp=ts2,
+        )
+
+        worker = registry.get_worker("worker-1.example.com", 12345)
+        assert worker is not None
+        assert worker.registered_tasks == ["task.b"]
+        assert worker.last_seen == ts2
+        assert worker.status == WorkerStatus.ONLINE
+
+    def test_mark_online_noops_when_worker_missing(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """mark_online should return cleanly if the worker isn't registered."""
+        registry.mark_online("missing.example.com", 12345)
+        assert registry.get_all_workers() == []
+
+    def test_get_nonexistent_worker(self, registry: WorkerRegistry) -> None:
+        """Getting a nonexistent worker returns None."""
+        worker = registry.get_worker("nonexistent.example.com", 99999)
+        assert worker is None
+
+    def test_get_registered_tasks(self, registry: WorkerRegistry) -> None:
+        """Get registered tasks for a specific worker."""
+        registry.register_worker(
+            hostname="worker-1.example.com",
+            pid=12345,
+            tasks=["myapp.tasks.send", "myapp.tasks.process", "myapp.tasks.analyze"],
+        )
+
+        tasks = registry.get_registered_tasks("worker-1.example.com", 12345)
+        assert len(tasks) == 3
+        assert "myapp.tasks.send" in tasks
+        assert "myapp.tasks.process" in tasks
+        assert "myapp.tasks.analyze" in tasks
+
+        # Returned list should be a copy: external mutation must not affect registry state.
+        tasks.append("evil.mutate")
+        tasks2 = registry.get_registered_tasks("worker-1.example.com", 12345)
+        assert "evil.mutate" not in tasks2
+
+    def test_get_all_workers_empty(self, registry: WorkerRegistry) -> None:
+        """Getting all workers when none registered returns empty list."""
+        workers = registry.get_all_workers()
+        assert workers == []
+
+    def test_get_all_workers_multiple(self, registry: WorkerRegistry) -> None:
+        """Get all workers with multiple workers."""
+        registry.register_worker(
+            hostname="worker-1.example.com",
+            pid=12345,
+            tasks=["myapp.tasks.send"],
+        )
+        # Small delay ensures worker-2 has later timestamp
+        import time
+
+        time.sleep(0.01)
+        registry.register_worker(
+            hostname="worker-2.example.com",
+            pid=54321,
+            tasks=["myapp.tasks.process"],
+        )
+
+        workers = registry.get_all_workers()
+        assert len(workers) == 2
+        # worker-2 should be first (registered later)
+        assert workers[0].hostname == "worker-2.example.com"
+        assert workers[1].hostname == "worker-1.example.com"
+
+    def test_workers_sorted_by_last_seen(self, registry: WorkerRegistry) -> None:
+        """Workers are sorted by last_seen (most recent first)."""
+        import time
+
+        registry.register_worker(
+            hostname="worker-1.example.com",
+            pid=11111,
+            tasks=["task-a"],
+        )
+        time.sleep(0.1)  # Ensure time difference
+        registry.register_worker(
+            hostname="worker-2.example.com",
+            pid=22222,
+            tasks=["task-b"],
+        )
+        time.sleep(0.01)
+
+        workers = registry.get_all_workers()
+        assert workers[0].hostname == "worker-2.example.com"  # Most recent
+        assert workers[1].hostname == "worker-1.example.com"  # Older
+
+    def test_mark_shutdown(self, registry: WorkerRegistry) -> None:
+        """Marking a worker as offline."""
+        registry.register_worker(
+            hostname="worker-1.example.com",
+            pid=12345,
+            tasks=["myapp.tasks.send"],
+        )
+
+        registry.mark_shutdown("worker-1.example.com", 12345)
+
+        worker = registry.get_worker("worker-1.example.com", 12345)
+        assert worker is not None
+        assert worker.status == WorkerStatus.OFFLINE
+
+    def test_mark_online_updates_status_and_last_seen(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """Marking an existing worker as online updates status and last_seen."""
+        registry.register_worker(
+            hostname="worker-1.example.com",
+            pid=12345,
+            tasks=["myapp.tasks.send"],
+        )
+        registry.mark_shutdown("worker-1.example.com", 12345)
+
+        before = registry.get_worker("worker-1.example.com", 12345)
+        assert before is not None
+        before_last_seen = before.last_seen
+
+        registry.mark_online("worker-1.example.com", 12345)
+        after = registry.get_worker("worker-1.example.com", 12345)
+        assert after is not None
+        assert after.status == WorkerStatus.ONLINE
+        assert after.last_seen >= before_last_seen
+
+    def test_get_registered_tasks_after_shutdown(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """Registered tasks are still available after worker shutdown."""
+        registry.register_worker(
+            hostname="worker-1.example.com",
+            pid=12345,
+            tasks=["myapp.tasks.send"],
+        )
+        registry.mark_shutdown("worker-1.example.com", 12345)
+
+        # Tasks should still be accessible
+        tasks = registry.get_registered_tasks("worker-1.example.com", 12345)
+        assert len(tasks) == 1
+        assert "myapp.tasks.send" in tasks
+
+    def test_thread_safety_with_concurrent_access(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """Registry handles concurrent access safely."""
+        import threading
+
+        results = []
+        errors = []
+
+        def register_worker(hostname: str, pid: int) -> None:
+            try:
+                registry.register_worker(
+                    hostname=hostname,
+                    pid=pid,
+                    tasks=[f"{hostname}.task"],
+                )
+                results.append(True)
+            except Exception as e:
+                errors.append(e)
+
+        # Launch threads concurrently
+        threads = [
+            threading.Thread(
+                target=register_worker, args=(f"worker-{i}.com", 10000 + i)
+            )
+            for i in range(10)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        # All should succeed without errors
+        assert len(results) == 10
+        assert len(errors) == 0
+
+    def test_remove_stale_workers(self, registry: WorkerRegistry) -> None:
+        """Mark workers as stale if not seen recently."""
+
+        registry.register_worker(
+            hostname="old-worker.example.com",
+            pid=11111,
+            tasks=["old.task"],
+        )
+
+        # Mark as stale (timeout = 0 for immediate effect)
+        registry.remove_stale_workers(stale_timeout_minutes=0)
+
+        workers = registry.get_all_workers()
+        # Worker should still exist but marked offline
+        assert len(workers) == 1
+        assert workers[0].hostname == "old-worker.example.com"
+        assert workers[0].status == WorkerStatus.OFFLINE
+
+    def test_cleanup_old_offline_workers(self, registry: WorkerRegistry) -> None:
+        """Very old offline workers should be removed entirely."""
+        from datetime import timedelta, timezone
+
+        registry.register_worker(
+            hostname="old-worker.example.com",
+            pid=11111,
+            tasks=["old.task"],
+        )
+
+        # Manually set last_seen to a long time ago
+        with registry._lock:
+            worker = registry._workers["old-worker.example.com:11111"]
+            worker.last_seen = datetime.now(timezone.utc) - timedelta(hours=2)
+            worker.status = WorkerStatus.OFFLINE
+
+        # Cleanup should remove workers offline for > cleanup_timeout_minutes
+        registry.remove_stale_workers(
+            stale_timeout_minutes=0, cleanup_timeout_minutes=0
+        )
+
+        workers = registry.get_all_workers()
+        # Worker should be completely removed
+        assert len(workers) == 0
+
+    def test_register_worker_ignores_invalid_pid(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """Workers with invalid PID (0 or negative) should be ignored."""
+        registry.register_worker(hostname="bad-worker", pid=0, tasks=["some.task"])
+        registry.register_worker(hostname="bad-worker2", pid=-1, tasks=["some.task"])
+
+        workers = registry.get_all_workers()
+        assert len(workers) == 0
+
+
+class TestGraphStoreLastExecutionTime:
+    """Tests for get_last_execution_time method."""
+
+    def test_last_execution_time_empty_store(self, store: GraphStore) -> None:
+        """Return None for a task that doesn't exist."""
+        result = store.get_last_execution_time("nonexistent.task")
+        assert result is None
+
+    def test_last_execution_time_single_execution(
+        self, store: GraphStore, make_event: type
+    ) -> None:
+        """Return timestamp for a single execution."""
+        store.add_event(make_event.create("task-1", name="myapp.tasks.process"))
+
+        result = store.get_last_execution_time("myapp.tasks.process")
+        assert result is not None
+        # Should be close to the base time + 1 second (first event)
+        assert result.year == 2024
+
+    def test_last_execution_time_multiple_executions(
+        self, store: GraphStore, make_event: type
+    ) -> None:
+        """Return the most recent timestamp across multiple executions."""
+        # Create three executions of the same task (incrementing timestamps)
+        store.add_event(make_event.create("task-1", name="myapp.tasks.process"))
+        store.add_event(make_event.create("task-2", name="myapp.tasks.process"))
+        store.add_event(make_event.create("task-3", name="myapp.tasks.process"))
+
+        result = store.get_last_execution_time("myapp.tasks.process")
+        assert result is not None
+
+        # Should be the most recent (task-3's timestamp)
+        node = store.get_node("task-3")
+        assert node is not None
+        assert result == node.events[-1].timestamp
+
+    def test_last_execution_time_with_updates(
+        self, store: GraphStore, make_event: type
+    ) -> None:
+        """Return latest event timestamp when task has multiple events."""
+        # Task goes through PENDING -> STARTED -> SUCCESS
+        store.add_event(
+            make_event.create("task-1", TaskState.PENDING, name="myapp.tasks.process")
+        )
+        store.add_event(
+            make_event.create("task-1", TaskState.STARTED, name="myapp.tasks.process")
+        )
+        store.add_event(
+            make_event.create("task-1", TaskState.SUCCESS, name="myapp.tasks.process")
+        )
+
+        result = store.get_last_execution_time("myapp.tasks.process")
+        assert result is not None
+
+        # Should be the SUCCESS event timestamp
+        node = store.get_node("task-1")
+        assert node is not None
+        assert result == node.events[-1].timestamp  # Last event
+
+    def test_last_execution_time_excludes_synthetic_nodes(
+        self, store: GraphStore, make_event: type
+    ) -> None:
+        """Synthetic GROUP/CHORD nodes should not affect last execution time."""
+        group_id = "test-group"
+        store.add_event(
+            TaskEvent(
+                task_id="task-1",
+                name="myapp.grouped_task",
+                state=TaskState.SUCCESS,
+                timestamp=make_event._base_time,
+                group_id=group_id,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="task-2",
+                name="myapp.grouped_task",
+                state=TaskState.SUCCESS,
+                timestamp=make_event._base_time + timedelta(seconds=1),
+                group_id=group_id,
+            )
+        )
+
+        # Verify synthetic node was created
+        group_node = store.get_node(f"group:{group_id}")
+        assert group_node is not None
+        assert group_node.name == "group"
+
+        # get_last_execution_time for "group" should return None
+        # (synthetic nodes shouldn't count as executions)
+        result = store.get_last_execution_time("group")
+        assert result is None
+
+        # Real task should have a last execution time
+        result = store.get_last_execution_time("myapp.grouped_task")
+        assert result is not None
+
+    def test_last_execution_time_different_tasks(
+        self, store: GraphStore, make_event: type
+    ) -> None:
+        """Different task names return different timestamps."""
+        store.add_event(make_event.create("task-a", name="myapp.task_a"))
+        store.add_event(make_event.create("task-b", name="myapp.task_b"))
+        store.add_event(
+            make_event.create("task-c", name="myapp.task_a")
+        )  # Another execution
+
+        result_a = store.get_last_execution_time("myapp.task_a")
+        result_b = store.get_last_execution_time("myapp.task_b")
+
+        assert result_a is not None
+        assert result_b is not None
+        assert result_a > result_b  # task_a had a later execution
+
+
+class TestGraphStoreRootNodesSyntheticDateFiltering:
+    def test_get_root_nodes_to_date_filters_synthetic_by_earliest_child_timestamp(
+        self, store: GraphStore
+    ) -> None:
+        """Synthetic GROUP roots should be filtered by the earliest child timestamp."""
+        base = datetime(2024, 1, 1, tzinfo=UTC)
+        group_id = "date-filter-group"
+
+        # Two grouped tasks that both start on Jan 2 (so Jan 1 filter should exclude the group)
+        store.add_event(
+            TaskEvent(
+                task_id="m1",
+                name="myapp.tasks.member",
+                state=TaskState.SUCCESS,
+                timestamp=base + timedelta(days=1, hours=10),
+                group_id=group_id,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="m2",
+                name="myapp.tasks.member",
+                state=TaskState.SUCCESS,
+                timestamp=base + timedelta(days=1, hours=12),
+                group_id=group_id,
+            )
+        )
+
+        group_node_id = f"group:{group_id}"
+        roots, _ = store.get_root_nodes()
+        assert group_node_id in [r.task_id for r in roots]
+
+        jan1_midnight = datetime(2024, 1, 1, 0, 0, 0)
+        roots, total = store.get_root_nodes(to_date=jan1_midnight)
+        assert total == 0
+        assert roots == []
+
+    def test_get_root_nodes_handles_synthetic_with_missing_children(
+        self, store: GraphStore
+    ) -> None:
+        """Synthetic nodes with missing children should not break sorting or filtering."""
+        group_id = "bad"
+        group_node_id = f"group:{group_id}"
+
+        with store._lock:
+            store._graph.nodes[group_node_id] = TaskNode(
+                task_id=group_node_id,
+                name="group",
+                state=TaskState.PENDING,
+                node_type=NodeType.GROUP,
+                group_id=group_id,
+                children=["missing-child"],
+            )
+            store._graph.root_ids.append(group_node_id)
+
+        roots, total = store.get_root_nodes()
+        assert total == 1
+        assert roots[0].task_id == group_node_id
+
+        roots, total = store.get_root_nodes(to_date=datetime(2024, 1, 1, 0, 0, 0))
+        assert total == 1
+        assert roots[0].task_id == group_node_id
+
+
+class TestGraphStoreGetGraphFromRootEdgeCases:
+    def test_get_graph_from_root_skips_missing_nodes_and_prevents_cycles(
+        self, store: GraphStore
+    ) -> None:
+        """get_graph_from_root should ignore missing children and avoid infinite loops."""
+        base = datetime(2024, 1, 1, tzinfo=UTC)
+        store.add_event(
+            TaskEvent(
+                task_id="root",
+                name="root.task",
+                state=TaskState.SUCCESS,
+                timestamp=base,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="child",
+                name="child.task",
+                state=TaskState.SUCCESS,
+                timestamp=base + timedelta(seconds=1),
+                parent_id="root",
+            )
+        )
+
+        root_node = store.get_node("root")
+        assert root_node is not None
+        root_node.children.append("ghost")
+        root_node.children.append("root")
+
+        graph = store.get_graph_from_root("root")
+        assert "root" in graph
+        assert "child" in graph
+        assert "ghost" not in graph
+
+
+class TestGraphStoreEvictionParentCleanup:
+    def test_eviction_removes_evicted_child_from_parent_children(self) -> None:
+        """When a child is evicted, it should be removed from its parent's children list."""
+        store = GraphStore(max_nodes=3)
+        base = datetime(2024, 1, 1, tzinfo=UTC)
+
+        store.add_event(
+            TaskEvent(
+                task_id="oldest",
+                name="oldest.task",
+                state=TaskState.SUCCESS,
+                timestamp=base,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="parent",
+                name="parent.task",
+                state=TaskState.SUCCESS,
+                timestamp=base + timedelta(seconds=10),
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="child",
+                name="child.task",
+                state=TaskState.SUCCESS,
+                timestamp=base + timedelta(seconds=1),
+                parent_id="parent",
+            )
+        )
+
+        parent_node = store.get_node("parent")
+        assert parent_node is not None
+        assert "child" in parent_node.children
+
+        store.add_event(
+            TaskEvent(
+                task_id="newest",
+                name="newest.task",
+                state=TaskState.SUCCESS,
+                timestamp=base + timedelta(seconds=20),
+            )
+        )
+
+        assert store.get_node("child") is None
+        parent_node = store.get_node("parent")
+        assert parent_node is not None
+        assert "child" not in parent_node.children
+
+    def test_eviction_does_not_require_child_in_parent_children(self) -> None:
+        """Eviction should handle nodes with parent_id that were never linked as children."""
+        store = GraphStore(max_nodes=3)
+        base = datetime(2024, 1, 1, tzinfo=UTC)
+
+        # Child arrives first referencing a missing parent => no backlinking occurs.
+        store.add_event(
+            TaskEvent(
+                task_id="child",
+                name="child.task",
+                state=TaskState.SUCCESS,
+                timestamp=base + timedelta(seconds=1),
+                parent_id="parent",
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="parent",
+                name="parent.task",
+                state=TaskState.SUCCESS,
+                timestamp=base + timedelta(seconds=10),
+            )
+        )
+
+        parent_node = store.get_node("parent")
+        assert parent_node is not None
+        assert "child" not in parent_node.children
+
+        store.add_event(
+            TaskEvent(
+                task_id="oldest",
+                name="oldest.task",
+                state=TaskState.SUCCESS,
+                timestamp=base,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="newest",
+                name="newest.task",
+                state=TaskState.SUCCESS,
+                timestamp=base + timedelta(seconds=20),
+            )
+        )
+
+        assert store.get_node("child") is None

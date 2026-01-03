@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import TYPE_CHECKING
 
+from stemtrace.core.events import TaskEvent, WorkerEvent, WorkerEventType
 from stemtrace.library.transports import get_transport
 
 if TYPE_CHECKING:
     from stemtrace.core.ports import EventTransport
-    from stemtrace.server.store import GraphStore
+    from stemtrace.server.store import GraphStore, WorkerRegistry
 
 logger = logging.getLogger(__name__)
+
+# Default interval for stale worker checks (seconds)
+STALE_CHECK_INTERVAL = 60
 
 
 class EventConsumer:
@@ -25,15 +30,20 @@ class EventConsumer:
         *,
         prefix: str = "stemtrace",
         ttl: int = 86400,
+        worker_registry: WorkerRegistry | None = None,
+        stale_check_interval: int = STALE_CHECK_INTERVAL,
     ) -> None:
         """Initialize consumer with broker URL and target store."""
         self._broker_url = broker_url
         self._store = store
         self._prefix = prefix
         self._ttl = ttl
+        self._worker_registry = worker_registry
+        self._stale_check_interval = stale_check_interval
         self._transport: EventTransport | None = None
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._last_stale_check: float = 0.0
 
     @property
     def is_running(self) -> bool:
@@ -82,13 +92,66 @@ class EventConsumer:
                     break
 
                 try:
-                    self._store.add_event(event)
-                    logger.debug("Consumed event: %s (%s)", event.task_id, event.state)
+                    self._process_event(event)
+                    self._maybe_check_stale_workers()
                 except Exception:
-                    logger.exception("Error processing event %s", event.task_id)
+                    logger.exception("Error processing event")
         except Exception:
             if not self._stop_event.is_set():
                 logger.exception("Consumer loop error")
+
+    def _maybe_check_stale_workers(self) -> None:
+        """Periodically check for and mark stale workers as offline.
+
+        Called during event processing to detect workers that crashed
+        without sending a WORKER_SHUTDOWN event.
+        """
+        if self._worker_registry is None:
+            return
+
+        now = time.monotonic()
+        if now - self._last_stale_check >= self._stale_check_interval:
+            self._last_stale_check = now
+            self._worker_registry.remove_stale_workers()
+            logger.debug("Checked for stale workers")
+
+    def _process_event(self, event: TaskEvent | WorkerEvent) -> None:
+        """Route event to appropriate handler based on type."""
+        if isinstance(event, WorkerEvent):
+            self._handle_worker_event(event)
+        else:
+            self._store.add_event(event)
+            logger.debug("Consumed task event: %s (%s)", event.task_id, event.state)
+
+    def _handle_worker_event(self, event: WorkerEvent) -> None:
+        """Handle worker lifecycle events.
+
+        Processes ALL worker events from Redis to rebuild registry state.
+        When server restarts but workers are still running, historical
+        WORKER_READY events are valid and should register workers.
+        If a worker has shut down, the WORKER_SHUTDOWN event will mark it
+        offline. Stream ordering ensures correct final state.
+        """
+        if self._worker_registry is None:
+            logger.debug("No worker registry, skipping worker event")
+            return
+
+        if event.event_type == WorkerEventType.WORKER_READY:
+            self._worker_registry.register_worker(
+                hostname=event.hostname,
+                pid=event.pid,
+                tasks=event.registered_tasks,
+                event_timestamp=event.timestamp,
+            )
+            logger.info(
+                "Worker registered: %s:%d (%d tasks)",
+                event.hostname,
+                event.pid,
+                len(event.registered_tasks),
+            )
+        elif event.event_type == WorkerEventType.WORKER_SHUTDOWN:
+            self._worker_registry.mark_shutdown(event.hostname, event.pid)
+            logger.info("Worker shutdown: %s:%d", event.hostname, event.pid)
 
 
 class AsyncEventConsumer:
@@ -101,9 +164,18 @@ class AsyncEventConsumer:
         *,
         prefix: str = "stemtrace",
         ttl: int = 86400,
+        worker_registry: WorkerRegistry | None = None,
+        stale_check_interval: int = STALE_CHECK_INTERVAL,
     ) -> None:
         """Initialize async consumer wrapper with broker URL and target store."""
-        self._consumer = EventConsumer(broker_url, store, prefix=prefix, ttl=ttl)
+        self._consumer = EventConsumer(
+            broker_url,
+            store,
+            prefix=prefix,
+            ttl=ttl,
+            worker_registry=worker_registry,
+            stale_check_interval=stale_check_interval,
+        )
 
     @property
     def is_running(self) -> bool:

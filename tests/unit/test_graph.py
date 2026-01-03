@@ -892,6 +892,81 @@ class TestGroupNodeState:
         )
         assert group_node.state == TaskState.SUCCESS  # all done
 
+    def test_group_node_linked_to_parent_after_member_parent_update(self) -> None:
+        """Group node should be linked to common parent when members get parent_id after group creation.
+
+        This tests the bug fix: when group is created before STARTED events arrive,
+        members initially have parent_id=None, so group becomes root. When STARTED
+        events arrive with parent_id, group should be updated to link to that parent.
+        """
+        graph = TaskGraph()
+        parent_id = "workflow-task"
+        group_id = "group-abc"
+
+        # Create parent task
+        graph.add_event(
+            TaskEvent(
+                task_id=parent_id,
+                name="myapp.workflow",
+                state=TaskState.PENDING,
+                timestamp=datetime.now(UTC),
+            )
+        )
+
+        # Add PENDING events for group members (no parent_id yet)
+        graph.add_event(
+            TaskEvent(
+                task_id="member-1",
+                name="myapp.process",
+                state=TaskState.PENDING,
+                timestamp=datetime.now(UTC),
+                group_id=group_id,
+            )
+        )
+        graph.add_event(
+            TaskEvent(
+                task_id="member-2",
+                name="myapp.process",
+                state=TaskState.PENDING,
+                timestamp=datetime.now(UTC),
+                group_id=group_id,
+            )
+        )
+
+        # Group should be created as root (members have no parent yet)
+        group_node_id = f"group:{group_id}"
+        assert group_node_id in graph.nodes
+        assert group_node_id in graph.root_ids
+        assert graph.nodes[group_node_id].parent_id is None
+
+        # Now STARTED events arrive with parent_id
+        graph.add_event(
+            TaskEvent(
+                task_id="member-1",
+                name="myapp.process",
+                state=TaskState.STARTED,
+                timestamp=datetime.now(UTC),
+                parent_id=parent_id,
+                group_id=group_id,
+            )
+        )
+        graph.add_event(
+            TaskEvent(
+                task_id="member-2",
+                name="myapp.process",
+                state=TaskState.STARTED,
+                timestamp=datetime.now(UTC),
+                parent_id=parent_id,
+                group_id=group_id,
+            )
+        )
+
+        # Group should now be linked to parent, not a root
+        group_node = graph.nodes[group_node_id]
+        assert group_node.parent_id == parent_id
+        assert group_node_id not in graph.root_ids
+        assert group_node_id in graph.nodes[parent_id].children
+
     def test_group_node_created_under_common_parent(self) -> None:
         """GROUP node IS created under common parent to differentiate from independent tasks."""
         graph = TaskGraph()
@@ -1166,3 +1241,160 @@ class TestChordNodeCreation:
 
         # All headers done
         assert chord_node.state == TaskState.SUCCESS
+
+
+class TestGraphCoverageEdgeCases:
+    """Targeted tests to cover edge-case branches in TaskGraph."""
+
+    def test_compute_group_state_with_no_known_members_returns_pending(self) -> None:
+        """If member IDs aren't present in the graph, group state should be PENDING."""
+        graph = TaskGraph()
+        assert graph._compute_group_state(["missing-task"]) == TaskState.PENDING
+
+    def test_group_state_any_retry(self) -> None:
+        """GROUP state should be RETRY when any member is RETRY and none are PENDING/STARTED."""
+        graph = TaskGraph()
+        group_id = "group-retry"
+
+        graph.add_event(
+            TaskEvent(
+                task_id="t1",
+                name="myapp.tasks.a",
+                state=TaskState.SUCCESS,
+                timestamp=datetime.now(UTC),
+                group_id=group_id,
+            )
+        )
+        graph.add_event(
+            TaskEvent(
+                task_id="t2",
+                name="myapp.tasks.b",
+                state=TaskState.RETRY,
+                timestamp=datetime.now(UTC),
+                group_id=group_id,
+            )
+        )
+
+        assert graph.nodes[f"group:{group_id}"].state == TaskState.RETRY
+
+    def test_group_state_any_revoked(self) -> None:
+        """GROUP state should be REVOKED when any member is REVOKED and none are PENDING/STARTED/RETRY."""
+        graph = TaskGraph()
+        group_id = "group-revoked"
+
+        graph.add_event(
+            TaskEvent(
+                task_id="t1",
+                name="myapp.tasks.a",
+                state=TaskState.SUCCESS,
+                timestamp=datetime.now(UTC),
+                group_id=group_id,
+            )
+        )
+        graph.add_event(
+            TaskEvent(
+                task_id="t2",
+                name="myapp.tasks.b",
+                state=TaskState.REVOKED,
+                timestamp=datetime.now(UTC),
+                group_id=group_id,
+            )
+        )
+
+        assert graph.nodes[f"group:{group_id}"].state == TaskState.REVOKED
+
+    def test_group_state_falls_back_for_rejected(self) -> None:
+        """REJECTED isn't in the priority list, so it should fall back to the first state."""
+        graph = TaskGraph()
+        group_id = "group-rejected"
+
+        graph.add_event(
+            TaskEvent(
+                task_id="t1",
+                name="myapp.tasks.a",
+                state=TaskState.REJECTED,
+                timestamp=datetime.now(UTC),
+                group_id=group_id,
+            )
+        )
+        graph.add_event(
+            TaskEvent(
+                task_id="t2",
+                name="myapp.tasks.b",
+                state=TaskState.SUCCESS,
+                timestamp=datetime.now(UTC),
+                group_id=group_id,
+            )
+        )
+
+        assert graph.nodes[f"group:{group_id}"].state == TaskState.REJECTED
+
+    def test_upgrade_to_chord_removes_preexisting_callback_from_group_members(
+        self,
+    ) -> None:
+        """If callback was tracked as a group member before chord info arrives, it should be removed."""
+        graph = TaskGraph()
+        group_id = "out-of-order-chord"
+        callback_id = "callback"
+
+        # Callback arrives first with group_id => gets tracked as member.
+        graph.add_event(
+            TaskEvent(
+                task_id=callback_id,
+                name="myapp.tasks.callback",
+                state=TaskState.SUCCESS,
+                timestamp=datetime.now(UTC),
+                group_id=group_id,
+            )
+        )
+        assert callback_id in graph.get_group_members(group_id)
+
+        # Header arrives later and declares chord callback => upgrades to CHORD and removes callback from members.
+        graph.add_event(
+            TaskEvent(
+                task_id="header-1",
+                name="myapp.tasks.header",
+                state=TaskState.SUCCESS,
+                timestamp=datetime.now(UTC),
+                group_id=group_id,
+                chord_callback_id=callback_id,
+            )
+        )
+
+        assert graph.nodes[f"group:{group_id}"].node_type == NodeType.CHORD
+        assert callback_id not in graph.get_group_members(group_id)
+
+    def test_upgrade_to_chord_links_existing_callback_without_group_membership(
+        self,
+    ) -> None:
+        """If callback exists as standalone task, _upgrade_to_chord should link it when chord appears."""
+        graph = TaskGraph()
+        group_id = "chord-link-existing"
+        callback_id = "callback"
+
+        # Callback exists as standalone task (no group_id => not tracked as member)
+        graph.add_event(
+            TaskEvent(
+                task_id=callback_id,
+                name="myapp.tasks.callback",
+                state=TaskState.SUCCESS,
+                timestamp=datetime.now(UTC),
+            )
+        )
+        assert callback_id in graph.root_ids
+
+        graph.add_event(
+            TaskEvent(
+                task_id="header-1",
+                name="myapp.tasks.header",
+                state=TaskState.SUCCESS,
+                timestamp=datetime.now(UTC),
+                group_id=group_id,
+                chord_callback_id=callback_id,
+            )
+        )
+
+        chord_node_id = f"group:{group_id}"
+        assert graph.nodes[callback_id].parent_id == chord_node_id
+        assert callback_id in graph.nodes[chord_node_id].children
+        assert callback_id not in graph.root_ids

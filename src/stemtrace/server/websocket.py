@@ -46,8 +46,11 @@ class WebSocketManager:
         if self._loop is None:
             return
 
+        def _put_event() -> None:
+            self._queue.put_nowait(event)
+
         with contextlib.suppress(RuntimeError):
-            self._loop.call_soon_threadsafe(lambda: self._queue.put_nowait(event))
+            self._loop.call_soon_threadsafe(_put_event)
 
     async def broadcast(self, event: TaskEvent) -> None:
         """Send event to all connected clients."""

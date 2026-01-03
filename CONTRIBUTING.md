@@ -19,7 +19,7 @@ git clone https://github.com/iansokolskyi/stemtrace.git
 cd stemtrace
 
 # Install dependencies (creates venv automatically)
-uv sync --all-extras
+uv sync --extra dev
 
 # Install pre-commit hooks
 uv run pre-commit install
@@ -79,7 +79,7 @@ uv run pytest
 uv run pytest --cov=stemtrace --cov-report=term-missing
 ```
 
-**Coverage requirement:** 80% minimum
+**Coverage requirement:** 95% minimum
 
 ### Updating Dependencies
 
@@ -132,7 +132,7 @@ uv lock --upgrade
 ### Code Quality
 
 - Google-style docstrings on all public APIs
-- Immutable dataclasses with `frozen=True, slots=True`
+- Pydantic models: immutable with `model_config = ConfigDict(frozen=True)`, mutable with `validate_assignment=True`
 - Fire-and-forget pattern for publishers (never block)
 - Fakes over mocks in tests
 

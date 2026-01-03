@@ -3,7 +3,11 @@
 Usage:
     import stemtrace
 
-    stemtrace.init(app)
+    # Worker instrumentation
+    stemtrace.init_worker(app)
+
+    # FastAPI embedding
+    stemtrace.init_app(app)
 
     # Introspection
     stemtrace.is_initialized()  # -> bool
@@ -11,7 +15,8 @@ Usage:
     stemtrace.get_transport()   # -> EventTransport | None
 """
 
-from typing import TYPE_CHECKING
+import os
+from typing import TYPE_CHECKING, Any
 
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.core.exceptions import ConfigurationError
@@ -22,80 +27,56 @@ from stemtrace.library.config import StemtraceConfig, _reset_config, set_config
 from stemtrace.library.config import get_config as _get_config
 from stemtrace.library.signals import connect_signals
 from stemtrace.library.transports import get_transport as _get_transport
+from stemtrace.server.fastapi import (
+    StemtraceExtension,
+    create_router,
+    require_api_key,
+    require_basic_auth,
+)
 
 if TYPE_CHECKING:
     from celery import Celery
+    from fastapi import FastAPI
 
 __version__ = "0.1.1"
 __all__ = [
     "ConfigurationError",
     "StemtraceConfig",
+    "StemtraceExtension",
     "TaskEvent",
     "TaskGraph",
     "TaskNode",
     "TaskState",
     "__version__",
+    "create_router",
     "get_config",
     "get_transport",
-    "init",
+    "init_app",
+    "init_worker",
     "is_initialized",
+    "require_api_key",
+    "require_basic_auth",
 ]
 
-# Module-level state
 _transport: EventTransport | None = None
 
 
 def is_initialized() -> bool:
-    """Check if stemtrace has been initialized.
-
-    Returns:
-        True if init() has been called, False otherwise.
-
-    Example:
-        >>> import stemtrace
-        >>> stemtrace.is_initialized()
-        False
-        >>> stemtrace.init(app)
-        >>> stemtrace.is_initialized()
-        True
-    """
+    """Check if stemtrace has been initialized."""
     return _transport is not None
 
 
 def get_config() -> StemtraceConfig | None:
-    """Get the active stemtrace configuration.
-
-    Returns:
-        The configuration if initialized, None otherwise.
-
-    Example:
-        >>> import stemtrace
-        >>> stemtrace.init(app, prefix="my_prefix")
-        >>> config = stemtrace.get_config()
-        >>> config.prefix
-        'my_prefix'
-    """
+    """Get the active stemtrace configuration."""
     return _get_config()
 
 
 def get_transport() -> EventTransport | None:
-    """Get the active event transport.
-
-    Useful for testing to verify events are published correctly.
-
-    Returns:
-        The transport if initialized, None otherwise.
-
-    Example:
-        >>> import stemtrace
-        >>> stemtrace.init(app, transport_url="memory://")
-        >>> transport = stemtrace.get_transport()
-        >>> # For MemoryTransport, you can access published events
-    """
+    """Get the active event transport."""
     return _transport
 
 
-def init(
+def init_worker(
     app: "Celery",
     *,
     transport_url: str | None = None,
@@ -107,10 +88,7 @@ def init(
     additional_sensitive_keys: frozenset[str] | None = None,
     safe_keys: frozenset[str] | None = None,
 ) -> None:
-    """Initialize stemtrace event tracking.
-
-    Connects to Celery's task signals and publishes lifecycle events
-    to the configured transport (Redis, RabbitMQ, etc.).
+    """Initialize stemtrace for Celery worker instrumentation.
 
     Args:
         app: The Celery application instance.
@@ -125,18 +103,6 @@ def init(
 
     Raises:
         ConfigurationError: If no broker URL can be determined.
-
-    Example:
-        >>> from celery import Celery
-        >>> import stemtrace
-        >>> app = Celery("myapp", broker="redis://localhost:6379/0")
-        >>> stemtrace.init(app)
-
-        # With explicit transport URL:
-        >>> stemtrace.init(app, transport_url="redis://events-redis:6379/1")
-
-        # Disable arg capture:
-        >>> stemtrace.init(app, capture_args=False)
     """
     global _transport
 
@@ -161,9 +127,58 @@ def init(
 
     _transport = _get_transport(url, prefix=prefix, ttl=ttl)
     connect_signals(_transport)
-
-    # Register bootsteps for RECEIVED events (worker-side)
     register_bootsteps(app)
+
+
+def init_app(
+    fastapi_app: "FastAPI",
+    *,
+    broker_url: str | None = None,
+    prefix: str = "/stemtrace",
+    ttl: int = 86400,
+    max_nodes: int = 10000,
+    embedded_consumer: bool = True,
+    serve_ui: bool = True,
+    auth_dependency: Any = None,
+) -> StemtraceExtension:
+    """Initialize stemtrace as a FastAPI extension.
+
+    Args:
+        fastapi_app: Your FastAPI application instance.
+        broker_url: Broker URL for events. Defaults to STEMTRACE_BROKER_URL env var.
+        prefix: Mount path for stemtrace routes (default: "/stemtrace").
+        ttl: Event TTL in seconds (default: 24 hours).
+        max_nodes: Maximum number of nodes in memory store (default: 10000).
+        embedded_consumer: Run event consumer in FastAPI process (default: True).
+        serve_ui: Serve React dashboard (default: True).
+        auth_dependency: Optional FastAPI dependency for authentication.
+
+    Returns:
+        The initialized StemtraceExtension instance.
+
+    Raises:
+        ConfigurationError: If no broker URL can be determined.
+    """
+    if broker_url is None:
+        broker_url = os.getenv("STEMTRACE_BROKER_URL")
+        if not broker_url:
+            raise ConfigurationError(
+                "No broker URL available. Pass broker_url parameter or "
+                "set STEMTRACE_BROKER_URL environment variable."
+            )
+
+    extension = StemtraceExtension(
+        broker_url=broker_url,
+        embedded_consumer=embedded_consumer,
+        serve_ui=serve_ui,
+        prefix=prefix,
+        ttl=ttl,
+        max_nodes=max_nodes,
+        auth_dependency=auth_dependency,
+    )
+    extension.init_app(fastapi_app, prefix=prefix)
+
+    return extension
 
 
 def _reset() -> None:

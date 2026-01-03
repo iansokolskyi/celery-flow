@@ -184,7 +184,7 @@ def safe_serialize(
         serialized = json.dumps(scrubbed, default=str)
         if len(serialized) > max_size:
             return f"[Truncated: {len(serialized)} bytes > {max_size} max]"
-        # Return the original scrubbed value (not the JSON string)
+        # Preserve the original scrubbed shape (not the JSON string).
         return scrubbed
     except (TypeError, ValueError) as e:
         logger.debug("Failed to serialize value: %s", e)

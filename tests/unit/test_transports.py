@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
 from stemtrace.core.exceptions import UnsupportedBrokerError
 from stemtrace.library.transports import get_transport
 from stemtrace.library.transports.memory import MemoryTransport
@@ -55,6 +55,23 @@ class TestMemoryTransport:
 
         assert len(MemoryTransport.events) == 1
         assert MemoryTransport.events[0] == started_event
+
+    def test_publish_worker_event_adds_event(
+        self, memory_transport: MemoryTransport
+    ) -> None:
+        """publish() stores WorkerEvent instances as well."""
+        worker_event = WorkerEvent(
+            event_type=WorkerEventType.WORKER_READY,
+            hostname="worker-1",
+            pid=12345,
+            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+            registered_tasks=["tasks.add"],
+        )
+
+        memory_transport.publish(worker_event)
+
+        assert len(MemoryTransport.events) == 1
+        assert MemoryTransport.events[0] == worker_event
 
     def test_publish_multiple_events(
         self,
@@ -194,6 +211,17 @@ class TestRedisTransport:
             timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
         )
 
+    @pytest.fixture
+    def worker_event(self) -> WorkerEvent:
+        """Create a sample WorkerEvent for testing."""
+        return WorkerEvent(
+            event_type=WorkerEventType.WORKER_READY,
+            hostname="worker-1",
+            pid=12345,
+            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+            registered_tasks=["tasks.add", "tasks.multiply"],
+        )
+
     def test_client_property(
         self,
         transport: RedisTransport,
@@ -256,6 +284,45 @@ class TestRedisTransport:
 
         assert "Failed to publish event" in caplog.text
         assert "task-123" in caplog.text
+
+    def test_publish_worker_event_logs_error_on_exception(
+        self,
+        transport: RedisTransport,
+        mock_client: MagicMock,
+        worker_event: WorkerEvent,
+        caplog: Any,
+    ) -> None:
+        """publish() logs warning on Redis errors for WorkerEvent, doesn't raise."""
+        mock_client.xadd.side_effect = ConnectionError("Redis unavailable")
+
+        # Should not raise
+        transport.publish(worker_event)
+
+        assert "Failed to publish event" in caplog.text
+        assert "worker-1:12345" in caplog.text
+
+    def test_consume_yields_worker_event(
+        self,
+        transport: RedisTransport,
+        mock_client: MagicMock,
+        worker_event: WorkerEvent,
+    ) -> None:
+        """consume() yields WorkerEvent instances from stream when event_type present."""
+        serialized = worker_event.model_dump_json().encode()
+        mock_client.xread.return_value = [
+            (
+                b"test:events",
+                [(b"1234567890-0", {b"data": serialized})],
+            )
+        ]
+
+        events = []
+        for event in transport.consume():
+            events.append(event)
+            break
+
+        assert len(events) == 1
+        assert events[0] == worker_event
 
     def test_consume_yields_events(
         self,
@@ -429,3 +496,48 @@ class TestRedisTransport:
             break
 
         mock_client.xread.assert_called_once()
+
+    def test_parse_event_raises_for_unknown_payload(
+        self, transport: RedisTransport
+    ) -> None:
+        """_parse_event should raise when payload lacks both event_type and task_id."""
+        with pytest.raises(ValueError):
+            transport._parse_event('{"unexpected": "value"}')
+
+    def test_consume_skips_empty_reads_and_logs_parse_errors(
+        self,
+        transport: RedisTransport,
+        mock_client: MagicMock,
+        sample_event: TaskEvent,
+        caplog: Any,
+    ) -> None:
+        """consume() should continue on empty reads and skip invalid JSON payloads."""
+        serialized = sample_event.model_dump_json().encode()
+        call_count = 0
+
+        def xread_side_effect(*args: Any, **kwargs: Any) -> list[Any]:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return []
+            if call_count == 2:
+                return [
+                    (
+                        b"test:events",
+                        [(b"1234567890-0", {b"data": b"not-json"})],
+                    )
+                ]
+            return [
+                (
+                    b"test:events",
+                    [(b"1234567890-1", {b"data": serialized})],
+                )
+            ]
+
+        mock_client.xread.side_effect = xread_side_effect
+
+        for _event in transport.consume():
+            break
+
+        assert call_count == 3
+        assert "Failed to parse event from Redis stream" in caplog.text

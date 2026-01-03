@@ -16,9 +16,13 @@ const queryClient = new QueryClient({
   },
 })
 
-// Create router
+// Get base path from injected config (set by server)
+const basepath = window.__STEMTRACE_BASE__ ?? ''
+
+// Create router with dynamic basepath
 const router = createRouter({
   routeTree,
+  basepath,
   context: {
     queryClient,
   },

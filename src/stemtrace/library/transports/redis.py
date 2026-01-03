@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
 from typing_extensions import Self
 
-from stemtrace.core.events import TaskEvent
+from stemtrace.core.events import TaskEvent, WorkerEvent
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -15,6 +17,9 @@ if TYPE_CHECKING:
     from redis import Redis
 
 logger = logging.getLogger(__name__)
+
+# Type alias for all events that can be consumed from the stream
+StreamEvent = TaskEvent | WorkerEvent
 
 
 class RedisTransport:
@@ -42,8 +47,14 @@ class RedisTransport:
         """TTL in seconds."""
         return self._ttl
 
-    def publish(self, event: TaskEvent) -> None:
-        """Publish event. Fire-and-forget: logs errors, never raises."""
+    def publish(self, event: StreamEvent) -> None:
+        """Publish an event to the Redis stream.
+
+        Fire-and-forget: logs errors, never raises.
+
+        Args:
+            event: Event to publish (TaskEvent or WorkerEvent).
+        """
         try:
             self._client.xadd(
                 self._stream_key,
@@ -52,12 +63,24 @@ class RedisTransport:
                 approximate=True,
             )
         except Exception:
+            event_id = self._event_identifier(event)
             logger.warning(
-                "Failed to publish event %s to Redis", event.task_id, exc_info=True
+                "Failed to publish event %s to Redis", event_id, exc_info=True
             )
 
-    def consume(self, last_id: str = "0") -> Iterator[TaskEvent]:
-        """Blocking iterator that yields events as they arrive."""
+    @staticmethod
+    def _event_identifier(event: StreamEvent) -> str:
+        """Create a stable identifier for logging."""
+        if isinstance(event, TaskEvent):
+            return event.task_id
+        return f"{event.hostname}:{event.pid}:{event.event_type}"
+
+    def consume(self, last_id: str = "0") -> Iterator[StreamEvent]:
+        """Blocking iterator that yields events as they arrive.
+
+        Detects event type from JSON and yields appropriate model
+        (TaskEvent or WorkerEvent).
+        """
         current_id = last_id
         while True:
             results = self._client.xread(
@@ -78,7 +101,28 @@ class RedisTransport:
                     data = fields.get(b"data") or fields.get("data")
                     if data:
                         data_str = data.decode() if isinstance(data, bytes) else data
-                        yield TaskEvent.model_validate_json(data_str)
+                        try:
+                            yield self._parse_event(data_str)
+                        except (json.JSONDecodeError, ValidationError, ValueError):
+                            logger.warning(
+                                "Failed to parse event from Redis stream %s at id %s",
+                                self._stream_key,
+                                current_id,
+                                exc_info=True,
+                            )
+                            continue
+
+    def _parse_event(self, data_str: str) -> StreamEvent:
+        """Parse JSON into appropriate event type."""
+        # Peek at JSON to determine event type
+        parsed = json.loads(data_str)
+        if "event_type" in parsed:
+            # WorkerEvent has event_type field
+            return WorkerEvent.model_validate(parsed)
+        if "task_id" in parsed:
+            # TaskEvent has task_id field
+            return TaskEvent.model_validate(parsed)
+        raise ValueError("Unknown event payload: missing event_type and task_id")
 
     @classmethod
     def from_url(cls, url: str, prefix: str = "stemtrace", ttl: int = 86400) -> Self:

@@ -2,8 +2,19 @@
  * API client for stemtrace backend.
  */
 
-// Base URL determined by environment
-export const API_BASE = import.meta.env.DEV ? '/api' : '/stemtrace/api'
+// Extend window type for injected base path
+declare global {
+  interface Window {
+    __STEMTRACE_BASE__?: string
+  }
+}
+
+// Base URL: use injected base path in production, proxy in dev
+export const getBasePath = (): string => window.__STEMTRACE_BASE__ ?? ''
+export const getApiBase = (): string => (import.meta.env.DEV ? '/api' : `${getBasePath()}/api`)
+
+// For backwards compatibility (but prefer getApiBase() for lazy evaluation)
+export const API_BASE = getApiBase()
 
 // Types matching backend schemas
 export type NodeType = 'TASK' | 'GROUP' | 'CHORD'
@@ -26,12 +37,18 @@ export interface TaskEvent {
   traceback: string | null
 }
 
+export type TaskStatus = 'active' | 'never_run' | 'not_registered'
+
 export interface RegisteredTask {
   name: string
   signature: string | null
   docstring: string | null
   module: string | null
   bound: boolean
+  execution_count: number
+  registered_by: string[]
+  last_run: string | null
+  status: TaskStatus
 }
 
 export interface TaskRegistryResponse {
@@ -100,6 +117,20 @@ export interface HealthResponse {
   node_count: number
 }
 
+export interface Worker {
+  hostname: string
+  pid: number
+  registered_tasks: string[]
+  status: 'online' | 'offline'
+  registered_at: string
+  last_seen: string
+}
+
+export interface WorkerListResponse {
+  workers: Worker[]
+  total: number
+}
+
 export interface FetchTasksParams {
   limit?: number
   offset?: number
@@ -163,11 +194,25 @@ export async function fetchHealth(): Promise<HealthResponse> {
   return response.json()
 }
 
-export async function fetchTaskRegistry(query?: string): Promise<TaskRegistryResponse> {
-  const url = query
-    ? `${API_BASE}/tasks/registry?query=${encodeURIComponent(query)}`
-    : `${API_BASE}/tasks/registry`
+export async function fetchTaskRegistry(
+  query?: string,
+  status?: TaskStatus,
+): Promise<TaskRegistryResponse> {
+  const searchParams = new URLSearchParams()
+  if (query) searchParams.set('query', query)
+  if (status) searchParams.set('status', status)
+
+  const url = `${API_BASE}/tasks/registry${searchParams.toString() ? `?${searchParams}` : ''}`
   const response = await fetch(url)
   if (!response.ok) throw new Error('Failed to fetch task registry')
+  return response.json()
+}
+
+export async function fetchWorkers(hostname?: string): Promise<WorkerListResponse> {
+  const url = hostname
+    ? `${API_BASE}/workers/${encodeURIComponent(hostname)}`
+    : `${API_BASE}/workers`
+  const response = await fetch(url)
+  if (!response.ok) throw new Error('Failed to fetch workers')
   return response.json()
 }

@@ -16,12 +16,15 @@ import {
   fetchTask,
   fetchTaskRegistry,
   fetchTasks,
+  fetchWorkers,
   type GraphListResponse,
   type GraphResponse,
   type HealthResponse,
   type TaskDetailResponse,
   type TaskListResponse,
   type TaskRegistryResponse,
+  type TaskStatus,
+  type WorkerListResponse,
 } from './client'
 
 // Polling interval when WebSocket is disconnected
@@ -139,13 +142,24 @@ export function useHealth() {
   })
 }
 
-export function useTaskRegistry(query?: string) {
+export function useTaskRegistry(query?: string, status?: TaskStatus) {
   const { isConnected } = useWebSocketContext()
 
   return useQuery<TaskRegistryResponse>({
-    queryKey: ['taskRegistry', query],
-    queryFn: () => fetchTaskRegistry(query),
+    queryKey: ['taskRegistry', query, status],
+    queryFn: () => fetchTaskRegistry(query, status),
     // Registry refreshes less frequently
+    refetchInterval: isConnected ? false : 30000,
+  })
+}
+
+export function useWorkers(hostname?: string) {
+  const { isConnected } = useWebSocketContext()
+
+  return useQuery<WorkerListResponse>({
+    queryKey: ['workers', hostname],
+    queryFn: () => fetchWorkers(hostname),
+    // Workers refresh less frequently
     refetchInterval: isConnected ? false : 30000,
   })
 }

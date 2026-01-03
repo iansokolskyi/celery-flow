@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.fastapi.auth import require_api_key, require_basic_auth
 from stemtrace.server.fastapi.extension import StemtraceExtension
 from stemtrace.server.fastapi.router import create_router
@@ -87,6 +88,41 @@ class TestWebSocketEndpoint:
 
             # After disconnect
             assert ws_manager.connection_count == 0
+
+    def test_store_listener_queues_events_for_broadcast(self) -> None:
+        """Events added to store are queued for WebSocket broadcast."""
+        import time
+
+        # Use extension with lifespan so broadcast loop starts
+        ext = StemtraceExtension(
+            broker_url="memory://",
+            embedded_consumer=False,  # We'll add events manually
+        )
+
+        app = FastAPI(lifespan=ext.lifespan)
+        app.include_router(ext.router, prefix="/stemtrace")
+
+        with TestClient(app) as client, client.websocket_connect("/stemtrace/ws"):
+            # Verify connected
+            assert ext.ws_manager.connection_count == 1
+
+            # Add an event to the store
+            event = TaskEvent(
+                task_id="test-ws-123",
+                name="tests.sample",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+            ext.store.add_event(event)
+
+            # Give broadcast loop time to process
+            time.sleep(0.1)
+
+            # Verify the event was processed (queue should be empty after broadcast)
+            # The broadcast happens asynchronously, so we just verify the connection
+            # is still active and the store has the event
+            assert ext.ws_manager.connection_count == 1
+            assert ext.store.get_node("test-ws-123") is not None
 
 
 class TestStemtraceExtension:
@@ -578,3 +614,195 @@ class TestGraphEdgeData:
         group_node = graph["nodes"][group_node_id]
         assert "task-1" in group_node["children"]
         assert "task-2" in group_node["children"]
+
+
+class TestWorkersEndpoint:
+    """Tests for /api/workers endpoints."""
+
+    def test_workers_empty_registry(self) -> None:
+        """Empty registry returns empty list."""
+        from stemtrace.server.store import WorkerRegistry
+
+        store = GraphStore()
+        worker_registry = WorkerRegistry()
+        router = create_router(store=store, worker_registry=worker_registry)
+
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/workers")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["workers"] == []
+        assert data["total"] == 0
+
+    def test_workers_returns_registered_worker(self) -> None:
+        """Registered worker appears in response."""
+        from stemtrace.server.store import WorkerRegistry
+
+        store = GraphStore()
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker(
+            "worker-1", 12345, ["tasks.add", "tasks.multiply"]
+        )
+
+        router = create_router(store=store, worker_registry=worker_registry)
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/workers")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["total"] == 1
+        worker = data["workers"][0]
+        assert worker["hostname"] == "worker-1"
+        assert worker["pid"] == 12345
+        assert worker["registered_tasks"] == ["tasks.add", "tasks.multiply"]
+        assert worker["status"] == "online"
+
+    def test_workers_by_hostname(self) -> None:
+        """Filter workers by hostname."""
+        from stemtrace.server.store import WorkerRegistry
+
+        store = GraphStore()
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker("worker-1", 12345, ["tasks.add"])
+        worker_registry.register_worker("worker-2", 67890, ["tasks.multiply"])
+
+        router = create_router(store=store, worker_registry=worker_registry)
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/workers/worker-1")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["total"] == 1
+        assert data["workers"][0]["hostname"] == "worker-1"
+
+    def test_workers_shutdown_status(self) -> None:
+        """Shutdown worker has offline status."""
+        from stemtrace.server.store import WorkerRegistry
+
+        store = GraphStore()
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker("worker-1", 12345, ["tasks.add"])
+        worker_registry.mark_shutdown("worker-1", 12345)
+
+        router = create_router(store=store, worker_registry=worker_registry)
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/workers")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["total"] == 1
+        worker = data["workers"][0]
+        assert worker["status"] == WorkerStatus.OFFLINE
+
+
+class TestRegistryWithWorkers:
+    """Tests for task registry with worker registration data."""
+
+    def test_registry_shows_registered_by(self) -> None:
+        """Tasks show which workers registered them."""
+        from stemtrace.server.store import WorkerRegistry
+
+        store = GraphStore()
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker(
+            "worker-1", 12345, ["tasks.add", "tasks.multiply"]
+        )
+        worker_registry.register_worker("worker-2", 67890, ["tasks.add"])  # Same task
+
+        router = create_router(store=store, worker_registry=worker_registry)
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/tasks/registry")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Find tasks.add
+        add_task = next(t for t in data["tasks"] if t["name"] == "tasks.add")
+        # Both workers should be listed (deduplicated and sorted)
+        assert sorted(add_task["registered_by"]) == ["worker-1", "worker-2"]
+
+    def test_registry_no_duplicate_hostnames(self) -> None:
+        """Same hostname from multiple restarts appears only once."""
+        from stemtrace.server.store import WorkerRegistry
+
+        store = GraphStore()
+        worker_registry = WorkerRegistry()
+        # Same hostname, different PIDs (simulating restarts)
+        worker_registry.register_worker("worker-1", 12345, ["tasks.add"])
+        worker_registry.register_worker("worker-1", 67890, ["tasks.add"])
+
+        router = create_router(store=store, worker_registry=worker_registry)
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/tasks/registry")
+        assert response.status_code == 200
+        data = response.json()
+
+        add_task = next(t for t in data["tasks"] if t["name"] == "tasks.add")
+        # Hostname should appear only once, not twice
+        assert add_task["registered_by"] == ["worker-1"]
+
+    def test_registry_never_run_status_filter(self) -> None:
+        """status=never_run shows only registered but never executed tasks."""
+        from stemtrace.server.store import WorkerRegistry
+
+        store = GraphStore()
+        # Add an executed task (not registered) - status: not_registered
+        store.add_event(
+            TaskEvent(
+                task_id="task-1",
+                name="tasks.executed_only",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+        )
+
+        # Add a registered task that's also executed - status: active
+        store.add_event(
+            TaskEvent(
+                task_id="task-2",
+                name="tasks.active_task",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+        )
+
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker(
+            "worker-1", 12345, ["tasks.never_run_task", "tasks.active_task"]
+        )
+
+        router = create_router(store=store, worker_registry=worker_registry)
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        # Filter to never_run status (registered but never executed)
+        response = client.get("/api/tasks/registry?status=never_run")
+        assert response.status_code == 200
+        data = response.json()
+
+        task_names = [t["name"] for t in data["tasks"]]
+        assert "tasks.never_run_task" in task_names
+        assert "tasks.executed_only" not in task_names  # not_registered status
+        assert "tasks.active_task" not in task_names  # active status
+
+        # All returned tasks should have never_run status
+        for task in data["tasks"]:
+            assert task["status"] == "never_run"

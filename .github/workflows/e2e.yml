@@ -126,6 +126,7 @@ jobs:
         working-directory: src/stemtrace/server/ui/frontend
         run: npm test
         env:
+          E2E_MODE: real
           PLAYWRIGHT_BASE_URL: http://localhost:8000
 
       - name: Upload Playwright report
