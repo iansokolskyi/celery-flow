@@ -10,8 +10,10 @@ import pytest
 from stemtrace.core.events import TaskState, WorkerEvent, WorkerEventType
 from stemtrace.library.config import StemtraceConfig, set_config
 from stemtrace.library.signals import (
+    _MAX_DOCSTRING_CHARS,
     _extract_chord_info,
     _extract_registered_tasks,
+    _extract_task_definitions,
     _format_exception,
     _format_traceback,
     _get_hostname_and_pid,
@@ -210,6 +212,61 @@ class TestWorkerLifecycleSignals:
         on_worker_shutdown(sender=sender, sig=15)
 
         assert len(MemoryTransport.events) == 0
+
+    def test_extract_task_definitions_empty_without_app(self) -> None:
+        """No sender.app returns empty task definitions mapping."""
+        sender = MagicMock()
+        sender.app = None
+        assert _extract_task_definitions(sender) == {}
+
+    def test_extract_task_definitions_empty_without_tasks_registry(self) -> None:
+        """No app.tasks returns empty task definitions mapping."""
+        sender = SimpleNamespace(app=SimpleNamespace(tasks=None))
+        assert _extract_task_definitions(sender) == {}
+
+    def test_extract_task_definitions_truncates_docstring(self) -> None:
+        """Docstrings longer than the limit are truncated with a marker."""
+
+        def run_impl() -> None:
+            pass
+
+        run_impl.__doc__ = "x" * (_MAX_DOCSTRING_CHARS + 50)
+
+        class TaskObj:
+            run = staticmethod(run_impl)
+            bind = True
+
+        sender = SimpleNamespace(app=SimpleNamespace(tasks={"my.task": TaskObj()}))
+        defs = _extract_task_definitions(sender)
+        assert "my.task" in defs
+        assert defs["my.task"].bound is True
+        assert defs["my.task"].docstring is not None
+        assert defs["my.task"].docstring.endswith("[truncated]")
+        assert len(defs["my.task"].docstring) > _MAX_DOCSTRING_CHARS
+
+    def test_extract_task_definitions_signature_best_effort(self) -> None:
+        """Non-callable run attribute yields signature=None without raising."""
+
+        class TaskObj:
+            run = 123  # inspect.signature will raise TypeError
+            bind = False
+
+        sender = SimpleNamespace(app=SimpleNamespace(tasks={"my.bad": TaskObj()}))
+        defs = _extract_task_definitions(sender)
+        assert defs["my.bad"].signature is None
+
+    def test_extract_task_definitions_module_fallback_and_bind_guard(self) -> None:
+        """Fallback module uses task_obj.__module__ and bind guard ignores non-bool."""
+
+        class TaskObj:
+            __module__ = "my.module"
+            run = None
+            bind = MagicMock()
+
+        sender = SimpleNamespace(app=SimpleNamespace(tasks={"my.task": TaskObj()}))
+        defs = _extract_task_definitions(sender)
+        assert defs["my.task"].module == "my.module"
+        assert defs["my.task"].bound is False
 
 
 class TestTaskPrerun:
