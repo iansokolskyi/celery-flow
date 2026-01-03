@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.fastapi.auth import require_api_key, require_basic_auth
 from stemtrace.server.fastapi.extension import StemtraceExtension
 from stemtrace.server.fastapi.router import create_router
@@ -703,7 +704,7 @@ class TestWorkersEndpoint:
 
         assert data["total"] == 1
         worker = data["workers"][0]
-        assert worker["status"] == "offline"
+        assert worker["status"] == WorkerStatus.OFFLINE
 
 
 class TestRegistryWithWorkers:

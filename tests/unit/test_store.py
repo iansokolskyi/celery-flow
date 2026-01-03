@@ -1188,7 +1188,7 @@ class TestWorkerRegistry:
         # Worker should still exist but marked offline
         assert len(workers) == 1
         assert workers[0].hostname == "old-worker.example.com"
-        assert workers[0].status == "offline"
+        assert workers[0].status == WorkerStatus.OFFLINE
 
     def test_cleanup_old_offline_workers(self, registry: WorkerRegistry) -> None:
         """Very old offline workers should be removed entirely."""
