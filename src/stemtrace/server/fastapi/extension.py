@@ -2,28 +2,47 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from typing import TYPE_CHECKING, Any, overload
+
+from fastapi.responses import RedirectResponse
 
 from stemtrace.server.consumer import AsyncEventConsumer
 from stemtrace.server.fastapi.router import create_router
-from stemtrace.server.store import GraphStore
+from stemtrace.server.store import GraphStore, WorkerRegistry
 from stemtrace.server.ui.static import get_static_router
 from stemtrace.server.websocket import WebSocketManager
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Callable, Mapping
 
     from fastapi import APIRouter, FastAPI
+
+    LifespanNone = Callable[[Any], AbstractAsyncContextManager[None, bool | None]]
+    LifespanState = Callable[
+        [Any],
+        AbstractAsyncContextManager[Mapping[str, Any], bool | None],
+    ]
+    Lifespan = LifespanNone | LifespanState
+
+
+@asynccontextmanager
+async def _null_lifespan(app: Any) -> AsyncIterator[None]:  # noqa: ARG001
+    yield
 
 
 class StemtraceExtension:
     """Complete FastAPI integration: store, consumer, WebSocket, and router.
 
-    Example:
-        flow = StemtraceExtension(broker_url="redis://localhost:6379")
-        app = FastAPI(lifespan=flow.lifespan)
-        app.include_router(flow.router, prefix="/stemtrace")
+    Example (recommended):
+        app = FastAPI(lifespan=my_lifespan)
+        stemtrace = StemtraceExtension(broker_url="redis://localhost:6379")
+        stemtrace.init_app(app)  # Wraps lifespan + adds router
+
+    Example (manual):
+        stemtrace = StemtraceExtension(broker_url="redis://localhost:6379")
+        app = FastAPI(lifespan=stemtrace.lifespan)
+        app.include_router(stemtrace.router, prefix="/stemtrace")
     """
 
     def __init__(
@@ -32,20 +51,19 @@ class StemtraceExtension:
         *,
         embedded_consumer: bool = True,
         serve_ui: bool = True,
-        prefix: str = "stemtrace",
+        prefix: str = "/stemtrace",
         ttl: int = 86400,
         max_nodes: int = 10000,
         auth_dependency: Any = None,
     ) -> None:
         """Initialize extension with broker URL and optional configuration."""
         self._broker_url = broker_url
-        self._embedded_consumer = embedded_consumer
         self._serve_ui = serve_ui
-        self._prefix = prefix
-        self._ttl = ttl
+        self._prefix = self._normalize_prefix(prefix)
         self._auth_dependency = auth_dependency
 
         self._store = GraphStore(max_nodes=max_nodes)
+        self._worker_registry = WorkerRegistry()
         self._ws_manager = WebSocketManager()
         self._consumer: AsyncEventConsumer | None = None
 
@@ -53,11 +71,17 @@ class StemtraceExtension:
             self._consumer = AsyncEventConsumer(
                 broker_url,
                 self._store,
-                prefix=prefix,
+                prefix=self._prefix,
                 ttl=ttl,
+                worker_registry=self._worker_registry,
             )
 
         self._store.add_listener(self._ws_manager.queue_event)
+
+    @staticmethod
+    def _normalize_prefix(prefix: str) -> str:
+        """Normalize a mount/stream prefix by stripping leading/trailing slashes."""
+        return prefix.strip("/")
 
     @property
     def store(self) -> GraphStore:
@@ -75,12 +99,19 @@ class StemtraceExtension:
         return self._ws_manager
 
     @property
+    def worker_registry(self) -> WorkerRegistry:
+        """The worker registry for lifecycle tracking."""
+        return self._worker_registry
+
+    @property
     def router(self) -> APIRouter:
         """Pre-configured router. Mount with app.include_router()."""
         router = create_router(
             store=self._store,
             consumer=self._consumer,
             ws_manager=self._ws_manager,
+            worker_registry=self._worker_registry,
+            broker_url=self._broker_url,
             auth_dependency=self._auth_dependency,
         )
 
@@ -91,31 +122,49 @@ class StemtraceExtension:
 
         return router
 
-    @asynccontextmanager
-    async def lifespan(self, app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG002
-        """FastAPI lifespan: starts consumer and WebSocket on startup."""
-        await self._ws_manager.start_broadcast_loop()
-        if self._consumer is not None:
-            self._consumer.start()
+    def init_app(self, app: FastAPI, *, prefix: str | None = None) -> None:
+        """Initialize stemtrace on a FastAPI app. Wraps lifespan and adds router."""
+        mount_prefix = f"/{self._normalize_prefix(prefix or self._prefix)}"
 
-        try:
-            yield
-        finally:
-            if self._consumer is not None:
-                self._consumer.stop()
-            await self._ws_manager.stop_broadcast_loop()
+        original_lifespan = app.router.lifespan_context
+        app.router.lifespan_context = self._wrap_lifespan(original_lifespan)
 
-    def compose_lifespan(self, other_lifespan: Any = None) -> Any:
-        """Compose with another lifespan context manager."""
+        # Add redirect for no-trailing-slash (prevents fall-through to catch-all mounts)
+        @app.get(mount_prefix, include_in_schema=False)
+        async def _stemtrace_redirect() -> RedirectResponse:
+            return RedirectResponse(url=f"{mount_prefix}/", status_code=307)
+
+        app.include_router(self.router, prefix=mount_prefix)
+
+    @overload
+    def _wrap_lifespan(self, original: LifespanNone) -> LifespanNone: ...
+
+    @overload
+    def _wrap_lifespan(self, original: LifespanState) -> LifespanState: ...
+
+    def _wrap_lifespan(self, original: Any) -> Any:
+        """Wrap a lifespan with stemtrace startup/shutdown."""
 
         @asynccontextmanager
-        async def combined(app: FastAPI) -> AsyncIterator[None]:
-            """Combined lifespan context manager."""
-            async with self.lifespan(app):
-                if other_lifespan is not None:
-                    async with other_lifespan(app):
-                        yield
-                else:
-                    yield
+        async def _wrapped(app: Any) -> AsyncIterator[Any]:
+            await self._ws_manager.start_broadcast_loop()
+            if self._consumer is not None:
+                self._consumer.start()
+            try:
+                async with original(app) as state:
+                    yield state
+            finally:
+                if self._consumer is not None:
+                    self._consumer.stop()
+                await self._ws_manager.stop_broadcast_loop()
 
-        return combined
+        return _wrapped
+
+    @property
+    def lifespan(self) -> LifespanNone:
+        """Standalone lifespan for manual setup (use init_app instead)."""
+        return self._wrap_lifespan(_null_lifespan)
+
+    def compose_lifespan(self, other_lifespan: Lifespan) -> Lifespan:
+        """Compose stemtrace lifespan with another lifespan (for manual setup)."""
+        return self._wrap_lifespan(other_lifespan)

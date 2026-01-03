@@ -33,7 +33,7 @@ app.conf.update(
 )
 
 # Initialize stemtrace tracking
-stemtrace.init(app)
+stemtrace.init_worker(app)
 
 
 # =============================================================================

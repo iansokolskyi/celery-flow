@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
 
 
 class TestTaskState:
@@ -241,4 +241,111 @@ class TestTaskEventSerialization:
         )
         data = original.model_dump(mode="json")
         restored = TaskEvent.model_validate(data)
+        assert restored == original
+
+
+class TestWorkerEventType:
+    """Tests for WorkerEventType enum values."""
+
+    def test_has_expected_values(self) -> None:
+        assert WorkerEventType.WORKER_READY.value == "worker_ready"
+        assert WorkerEventType.WORKER_SHUTDOWN.value == "worker_shutdown"
+
+    def test_string_comparison(self) -> None:
+        assert WorkerEventType.WORKER_READY == "worker_ready"
+        assert WorkerEventType.WORKER_SHUTDOWN == "worker_shutdown"
+
+
+class TestWorkerEventCreation:
+    """Tests for WorkerEvent model creation and validation."""
+
+    def test_worker_ready_event(self) -> None:
+        """Create worker_ready event with registered tasks."""
+        event = WorkerEvent(
+            event_type=WorkerEventType.WORKER_READY,
+            hostname="worker-1.example.com",
+            pid=12345,
+            timestamp=datetime(2024, 1, 1, 12, 0, tzinfo=UTC),
+            registered_tasks=["myapp.tasks.add", "myapp.tasks.process"],
+        )
+        assert event.event_type == WorkerEventType.WORKER_READY
+        assert event.hostname == "worker-1.example.com"
+        assert event.pid == 12345
+        assert len(event.registered_tasks) == 2
+        assert event.shutdown_time is None
+
+    def test_worker_shutdown_event(self) -> None:
+        """Create worker_shutdown event with shutdown time."""
+        shutdown_time = datetime(2024, 1, 1, 13, 30, 0, tzinfo=UTC)
+        event = WorkerEvent(
+            event_type=WorkerEventType.WORKER_SHUTDOWN,
+            hostname="worker-1.example.com",
+            pid=12345,
+            timestamp=shutdown_time,
+            shutdown_time=shutdown_time,
+        )
+        assert event.event_type == WorkerEventType.WORKER_SHUTDOWN
+        assert event.shutdown_time == shutdown_time
+        assert event.registered_tasks == []
+
+    def test_required_fields(self) -> None:
+        """All required fields must be present."""
+        with pytest.raises(ValidationError):
+            WorkerEvent(
+                event_type=WorkerEventType.WORKER_READY,
+                hostname="worker-1.example.com",
+                # Missing required: pid, timestamp
+            )
+
+    def test_defaults_to_empty_list(self) -> None:
+        """registered_tasks defaults to empty list."""
+        event = WorkerEvent(
+            event_type=WorkerEventType.WORKER_READY,
+            hostname="worker-1.example.com",
+            pid=12345,
+            timestamp=datetime(2024, 1, 1, 12, 0, tzinfo=UTC),
+        )
+        assert event.registered_tasks == []
+
+    def test_serialization(self) -> None:
+        """WorkerEvent serializes to dict correctly."""
+        event = WorkerEvent(
+            event_type=WorkerEventType.WORKER_READY,
+            hostname="worker-1.example.com",
+            pid=12345,
+            timestamp=datetime(2024, 1, 1, 12, 0, tzinfo=UTC),
+            registered_tasks=["myapp.tasks.send_email"],
+        )
+        data = event.model_dump()
+        assert data["event_type"] == "worker_ready"
+        assert data["hostname"] == "worker-1.example.com"
+        assert data["pid"] == 12345
+        assert data["registered_tasks"] == ["myapp.tasks.send_email"]
+        assert "shutdown_time" not in data or data["shutdown_time"] is None
+
+    def test_json_serialization(self) -> None:
+        """WorkerEvent serializes to JSON correctly."""
+        event = WorkerEvent(
+            event_type=WorkerEventType.WORKER_READY,
+            hostname="worker-1.example.com",
+            pid=12345,
+            timestamp=datetime(2024, 1, 1, 12, 0, tzinfo=UTC),
+            registered_tasks=["myapp.tasks.process"],
+        )
+        json_str = event.model_dump_json()
+        assert "worker_ready" in json_str
+        assert "worker-1.example.com" in json_str
+        assert str(12345) in json_str
+
+    def test_roundtrip(self) -> None:
+        """WorkerEvent survives serialization roundtrip."""
+        original = WorkerEvent(
+            event_type=WorkerEventType.WORKER_READY,
+            hostname="worker-2.example.com",
+            pid=54321,
+            timestamp=datetime(2024, 2, 1, 12, 0, tzinfo=UTC),
+            registered_tasks=["myapp.tasks.analyze"],
+        )
+        data = original.model_dump(mode="json")
+        restored = WorkerEvent.model_validate(data)
         assert restored == original

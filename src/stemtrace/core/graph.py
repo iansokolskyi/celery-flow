@@ -81,14 +81,83 @@ class TaskGraph(BaseModel):
             node.chord_id = event.chord_id
 
         # Update parent_id if we didn't have it before (PENDING lacks parent_id)
-        if node.parent_id is None and event.parent_id is not None:
+        # Also update if current parent is a group node but event has a different parent
+        # (this happens when group is created before STARTED event arrives with real parent_id)
+        should_update_parent = (
+            node.parent_id is None and event.parent_id is not None
+        ) or (
+            node.parent_id is not None
+            and event.parent_id is not None
+            and node.parent_id.startswith("group:")
+            and node.parent_id != event.parent_id
+        )
+
+        if should_update_parent:
+            old_parent = node.parent_id
             node.parent_id = event.parent_id
             if event.task_id in self.root_ids:
                 self.root_ids.remove(event.task_id)
+
+            # Remove from old parent's children if it was a group node
+            if (
+                old_parent
+                and old_parent.startswith("group:")
+                and old_parent in self.nodes
+            ):
+                old_group = self.nodes[old_parent]
+                if event.task_id in old_group.children:
+                    old_group.children.remove(event.task_id)
+
+            # Add to new parent's children
             if event.parent_id in self.nodes:
                 parent = self.nodes[event.parent_id]
                 if event.task_id not in parent.children:
                     parent.children.append(event.task_id)
+
+            # Check if this task is a group member and if group needs parent update
+            if node.group_id is not None:
+                group_node_id = f"group:{node.group_id}"
+                if group_node_id in self.nodes:
+                    group_node = self.nodes[group_node_id]
+                    members = self._group_members.get(node.group_id, [])
+                    # Collect real parents of all members (skip group_node_id and None)
+                    # After updating this member, check if all members now share a common real parent
+                    member_real_parents: set[str | None] = set()
+                    for member_id in members:
+                        if member_id in self.nodes:
+                            member = self.nodes[member_id]
+                            # If member's parent is the group node, it doesn't have a real parent yet
+                            # Otherwise, use its current parent_id (which is the real parent)
+                            if (
+                                member.parent_id != group_node_id
+                                and member.parent_id is not None
+                            ):
+                                member_real_parents.add(member.parent_id)
+
+                    # If all members share the same real parent, update group
+                    if (
+                        len(member_real_parents) == 1
+                        and None not in member_real_parents
+                    ):
+                        common_parent = member_real_parents.pop()
+                        if (
+                            common_parent != group_node_id
+                            and group_node.parent_id != common_parent
+                        ):
+                            # Update group node's parent
+                            group_node.parent_id = common_parent
+                            # Remove group from root_ids if it was there
+                            if group_node_id in self.root_ids:
+                                self.root_ids.remove(group_node_id)
+                            # Add group to parent's children
+                            if common_parent in self.nodes:
+                                parent_node = self.nodes[common_parent]
+                                if group_node_id not in parent_node.children:
+                                    parent_node.children.append(group_node_id)
+                                # Remove member tasks from parent's direct children (they're in group)
+                                for member_id in members:
+                                    if member_id in parent_node.children:
+                                        parent_node.children.remove(member_id)
 
         # Track group membership for synthetic node creation
         if event.group_id is not None:
@@ -180,7 +249,7 @@ class TaskGraph(BaseModel):
             if mid in self.nodes:
                 parents.add(self.nodes[mid].parent_id)
 
-        # Return the common parent if there's exactly one non-None parent
+        # Single shared non-None parent => common parent.
         if len(parents) == 1 and None not in parents:
             return parents.pop()
         return None

@@ -13,6 +13,8 @@ from celery.signals import (
     task_retry,
     task_revoked,
     task_sent,
+    worker_ready,
+    worker_shutdown,
 )
 
 from stemtrace.core.events import TaskEvent, TaskState
@@ -408,10 +410,9 @@ def connect_signals(transport: EventTransport) -> None:
     task_retry.connect(_on_task_retry)
     task_revoked.connect(_on_task_revoked)
 
-    # Set publisher for bootsteps (RECEIVED events)
-    from stemtrace.library.bootsteps import _set_publisher
-
-    _set_publisher(_publish_event)
+    # Worker lifecycle signals
+    worker_ready.connect(on_worker_ready)
+    worker_shutdown.connect(on_worker_shutdown)
 
     logger.info("stemtrace signal handlers connected")
 
@@ -428,7 +429,146 @@ def disconnect_signals() -> None:
     task_retry.disconnect(_on_task_retry)
     task_revoked.disconnect(_on_task_revoked)
 
+    # Worker lifecycle signals
+    worker_ready.disconnect(on_worker_ready)
+    worker_shutdown.disconnect(on_worker_shutdown)
+
     # Clear tracking state
     _pending_emitted.clear()
 
     logger.info("stemtrace signal handlers disconnected")
+
+
+def _get_hostname_and_pid(sender: Any) -> tuple[str, int]:
+    """Extract hostname and PID from Celery worker instance.
+
+    Args:
+        sender: Worker instance (WorkController) from worker signals.
+
+    Returns:
+        Tuple of (hostname, pid).
+    """
+    import os
+
+    # Celery exposes hostname through .hostname attribute on WorkController
+    hostname = getattr(sender, "hostname", None)
+    if hostname is None:
+        hostname = "unknown-host"
+        logger.warning("Could not determine hostname from sender")
+
+    # We're running in the worker process, so os.getpid() gives us the PID
+    pid = os.getpid()
+
+    return hostname, pid
+
+
+def _extract_registered_tasks(sender: Any) -> list[str]:
+    """Extract registered task names from Celery app.
+
+    Args:
+        sender: Worker instance (WorkController) from worker_ready signal.
+
+    Returns:
+        List of registered task names (fully qualified).
+    """
+    task_names: list[str] = []
+
+    # Get the Celery app - it's at sender.app for worker signals
+    app = getattr(sender, "app", None)
+    if app is None:
+        logger.warning("Could not find Celery app on sender")
+        return task_names
+
+    # Get the tasks registry from app.tasks
+    tasks_registry = getattr(app, "tasks", None)
+    if tasks_registry is None:
+        logger.warning("Could not find tasks registry on app")
+        return task_names
+
+    # app.tasks is a dict-like registry: {name: Task}
+    # Filter out internal Celery tasks (celery.*)
+    for name in tasks_registry:
+        if isinstance(name, str) and not name.startswith("celery."):
+            task_names.append(name)
+
+    logger.info("Extracted %d registered tasks for worker", len(task_names))
+    return task_names
+
+
+def on_worker_ready(sender: "Task", **_: Any) -> None:
+    """Handle worker_ready signal - publish worker registration event.
+
+    Celery sends this when worker starts and loads all registered tasks.
+    We capture hostname, PID, and the full task registry.
+
+    Args:
+        sender: Worker instance (WorkController).
+    """
+    global _transport
+
+    try:
+        hostname, pid = _get_hostname_and_pid(sender)
+        registered_tasks = _extract_registered_tasks(sender)
+
+        # Publish worker lifecycle event using the global transport
+        # This goes to the same stream as task events for unified consumption
+        from stemtrace.core.events import WorkerEvent, WorkerEventType
+
+        event = WorkerEvent(
+            event_type=WorkerEventType.WORKER_READY,
+            hostname=hostname,
+            pid=pid,
+            timestamp=datetime.now(timezone.utc),
+            registered_tasks=registered_tasks,
+        )
+
+        if _transport is not None:
+            _transport.publish(event)
+            logger.info(
+                "Worker ready event published: %s:%d (%d tasks)",
+                hostname,
+                pid,
+                len(registered_tasks),
+            )
+        else:
+            logger.warning("No transport configured, worker_ready event not published")
+
+    except Exception as e:
+        logger.warning("Failed to publish worker_ready event: %s", e, exc_info=True)
+
+
+def on_worker_shutdown(sender: Any = None, sig: int | None = None, **_: Any) -> None:
+    """Handle worker_shutdown signal - publish worker shutdown event.
+
+    Celery sends this on graceful worker shutdown.
+
+    Args:
+        sender: Worker instance (WorkController).
+        sig: Signal number causing shutdown (keyword arg from Celery).
+    """
+    global _transport
+    del sig  # Unused but provided by Celery signal
+
+    try:
+        hostname, pid = _get_hostname_and_pid(sender)
+
+        from stemtrace.core.events import WorkerEvent, WorkerEventType
+
+        event = WorkerEvent(
+            event_type=WorkerEventType.WORKER_SHUTDOWN,
+            hostname=hostname,
+            pid=pid,
+            timestamp=datetime.now(timezone.utc),
+            shutdown_time=datetime.now(timezone.utc),
+        )
+
+        if _transport is not None:
+            _transport.publish(event)
+            logger.info("Worker shutdown event published: %s:%d", hostname, pid)
+        else:
+            logger.warning(
+                "No transport configured, worker_shutdown event not published"
+            )
+
+    except Exception as e:
+        logger.warning("Failed to publish worker_shutdown event: %s", e, exc_info=True)

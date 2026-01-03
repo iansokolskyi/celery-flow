@@ -4,10 +4,27 @@ from __future__ import annotations
 
 import contextlib
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
+from pydantic import BaseModel
+
 from stemtrace.core.graph import NodeType, TaskGraph, TaskNode
+from stemtrace.server.api.schemas import WorkerStatus
+
+if TYPE_CHECKING:
+    from stemtrace.core.events import TaskEvent
+
+
+class WorkerInfo(BaseModel):
+    """Information about a registered worker."""
+
+    hostname: str
+    pid: int
+    registered_tasks: list[str]
+    registered_at: datetime
+    last_seen: datetime
+    status: WorkerStatus = WorkerStatus.ONLINE
 
 
 def _ensure_tz_aware(dt: datetime) -> datetime:
@@ -77,6 +94,165 @@ if TYPE_CHECKING:
     from stemtrace.core.events import TaskEvent, TaskState
 
 
+class WorkerRegistry:
+    """Thread-safe registry for worker lifecycle tracking.
+
+    Maintains per-worker task lists and online status from
+    worker_ready and worker_shutdown events.
+    """
+
+    def __init__(self) -> None:
+        """Initialize empty worker registry."""
+        self._workers: dict[str, WorkerInfo] = {}
+        self._lock = threading.RLock()
+
+    def register_worker(
+        self,
+        hostname: str,
+        pid: int,
+        tasks: list[str],
+        event_timestamp: datetime | None = None,
+    ) -> None:
+        """Register a worker with its task list.
+
+        Updates existing worker if already registered (worker restart scenario).
+
+        Args:
+            hostname: Worker hostname.
+            pid: Worker process ID.
+            tasks: List of registered task names.
+            event_timestamp: When the worker event occurred. Used for last_seen
+                to properly handle historical events from Redis replay.
+        """
+        # Validate PID - PID 0 is invalid (reserved for kernel)
+        if pid <= 0:
+            return
+
+        with self._lock:
+            worker_id = f"{hostname}:{pid}"
+            # Use event timestamp for last_seen (important for Redis replay)
+            # Fall back to now() for direct calls (e.g., tests)
+            timestamp = event_timestamp or datetime.now(timezone.utc)
+
+            # If worker already exists, update it (restart scenario)
+            if worker_id in self._workers:
+                self._workers[worker_id].registered_tasks = tasks
+                self._workers[worker_id].pid = pid
+                self._workers[worker_id].last_seen = timestamp
+                self._workers[worker_id].status = WorkerStatus.ONLINE
+            else:
+                # New worker registration
+                self._workers[worker_id] = WorkerInfo(
+                    hostname=hostname,
+                    pid=pid,
+                    registered_tasks=tasks,
+                    registered_at=timestamp,
+                    last_seen=timestamp,
+                    status=WorkerStatus.ONLINE,
+                )
+
+    def mark_shutdown(self, hostname: str, pid: int) -> None:
+        """Mark a worker as offline (shutdown).
+
+        Args:
+            hostname: Worker hostname.
+            pid: Worker process ID.
+        """
+        with self._lock:
+            worker_id = f"{hostname}:{pid}"
+            if worker_id in self._workers:
+                self._workers[worker_id].status = WorkerStatus.OFFLINE
+
+    def get_registered_tasks(self, hostname: str, pid: int) -> list[str]:
+        """Get registered tasks for a specific worker.
+
+        Args:
+            hostname: Worker hostname.
+            pid: Worker process ID.
+
+        Returns:
+            List of registered task names, or empty list if worker not found.
+        """
+        with self._lock:
+            worker_id = f"{hostname}:{pid}"
+            worker = self._workers.get(worker_id)
+            if worker:
+                return worker.registered_tasks
+        return []
+
+    def get_all_workers(self) -> list[WorkerInfo]:
+        """Get all registered workers.
+
+        Returns:
+            List of WorkerInfo, sorted by last_seen (most recent first).
+        """
+        with self._lock:
+            return sorted(
+                self._workers.values(),
+                key=lambda w: w.last_seen,
+                reverse=True,
+            )
+
+    def get_worker(self, hostname: str, pid: int) -> WorkerInfo | None:
+        """Get worker info by hostname and PID.
+
+        Args:
+            hostname: Worker hostname.
+            pid: Worker process ID.
+
+        Returns:
+            WorkerInfo if found, None otherwise.
+        """
+        with self._lock:
+            worker_id = f"{hostname}:{pid}"
+            return self._workers.get(worker_id)
+
+    def get_workers_by_hostname(self, hostname: str) -> list[WorkerInfo]:
+        """Get all workers matching a hostname.
+
+        Args:
+            hostname: Worker hostname to filter by.
+
+        Returns:
+            List of WorkerInfo matching the hostname, sorted by last_seen (most recent first).
+        """
+        with self._lock:
+            matching = [w for w in self._workers.values() if w.hostname == hostname]
+            return sorted(matching, key=lambda w: w.last_seen, reverse=True)
+
+    def remove_stale_workers(
+        self,
+        stale_timeout_minutes: int = 3,
+        cleanup_timeout_minutes: int = 30,
+    ) -> None:
+        """Mark workers as offline if not seen recently, remove very old ones.
+
+        Args:
+            stale_timeout_minutes: Minutes of inactivity before marking stale.
+            cleanup_timeout_minutes: Minutes since last seen before removing
+                offline workers entirely (reduces clutter from old sessions).
+        """
+        with self._lock:
+            now = datetime.now(timezone.utc)
+            stale_cutoff = now - timedelta(minutes=stale_timeout_minutes)
+            cleanup_cutoff = now - timedelta(minutes=cleanup_timeout_minutes)
+
+            # Mark stale workers offline, remove very old offline workers
+            to_remove: list[str] = []
+            for worker_id, worker_info in self._workers.items():
+                if worker_info.last_seen < stale_cutoff:
+                    worker_info.status = WorkerStatus.OFFLINE
+                # Remove offline workers not seen for a long time
+                if (
+                    worker_info.status == WorkerStatus.OFFLINE
+                    and worker_info.last_seen < cleanup_cutoff
+                ):
+                    to_remove.append(worker_id)
+
+            for worker_id in to_remove:
+                del self._workers[worker_id]
+
+
 class GraphStore:
     """Thread-safe in-memory store for TaskGraph with LRU eviction."""
 
@@ -114,11 +290,17 @@ class GraphStore:
     ) -> tuple[list[TaskNode], int]:
         """Get nodes with optional filtering, most recent first.
 
+        Excludes synthetic nodes (GROUP, CHORD) which are for graph
+        visualization only.
+
         Returns:
             Tuple of (filtered nodes, total count matching filters).
         """
         with self._lock:
-            nodes = list(self._graph.nodes.values())
+            # Exclude synthetic nodes (GROUP, CHORD) - they're for graphs, not task list
+            nodes = [
+                n for n in self._graph.nodes.values() if n.node_type == NodeType.TASK
+            ]
 
         if state is not None:
             nodes = [n for n in nodes if n.state == state]
@@ -233,9 +415,60 @@ class GraphStore:
             return len(self._graph.nodes)
 
     def get_unique_task_names(self) -> set[str]:
-        """Get all unique task names seen in events."""
+        """Get all unique task names seen in events.
+
+        Excludes synthetic nodes (GROUP, CHORD) which have placeholder
+        names like 'group' or 'chord'.
+        """
         with self._lock:
-            return {node.name for node in self._graph.nodes.values()}
+            return {
+                node.name
+                for node in self._graph.nodes.values()
+                if node.node_type == NodeType.TASK
+            }
+
+    def get_task_execution_count(self, task_name: str) -> int:
+        """Get number of executions (nodes) for a task name.
+
+        Excludes synthetic nodes (GROUP, CHORD).
+
+        Args:
+            task_name: Fully qualified task name.
+
+        Returns:
+            Number of task executions (TaskNodes) with this name.
+        """
+        with self._lock:
+            return sum(
+                1
+                for node in self._graph.nodes.values()
+                if node.name == task_name and node.node_type == NodeType.TASK
+            )
+
+    def get_last_execution_time(self, task_name: str) -> datetime | None:
+        """Get the most recent execution timestamp for a task name.
+
+        Returns the latest event timestamp across all executions of this task.
+        Excludes synthetic nodes (GROUP, CHORD).
+
+        Args:
+            task_name: Fully qualified task name.
+
+        Returns:
+            Most recent event timestamp, or None if task has never been executed.
+        """
+        with self._lock:
+            last_time: datetime | None = None
+            for node in self._graph.nodes.values():
+                if (
+                    node.name == task_name
+                    and node.node_type == NodeType.TASK
+                    and node.events
+                ):
+                    node_time = node.events[-1].timestamp
+                    if last_time is None or node_time > last_time:
+                        last_time = node_time
+            return last_time
 
     def _maybe_evict(self) -> None:
         """Evict oldest 10% when over capacity. Call with lock held."""

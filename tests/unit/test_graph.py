@@ -892,6 +892,81 @@ class TestGroupNodeState:
         )
         assert group_node.state == TaskState.SUCCESS  # all done
 
+    def test_group_node_linked_to_parent_after_member_parent_update(self) -> None:
+        """Group node should be linked to common parent when members get parent_id after group creation.
+
+        This tests the bug fix: when group is created before STARTED events arrive,
+        members initially have parent_id=None, so group becomes root. When STARTED
+        events arrive with parent_id, group should be updated to link to that parent.
+        """
+        graph = TaskGraph()
+        parent_id = "workflow-task"
+        group_id = "group-abc"
+
+        # Create parent task
+        graph.add_event(
+            TaskEvent(
+                task_id=parent_id,
+                name="myapp.workflow",
+                state=TaskState.PENDING,
+                timestamp=datetime.now(UTC),
+            )
+        )
+
+        # Add PENDING events for group members (no parent_id yet)
+        graph.add_event(
+            TaskEvent(
+                task_id="member-1",
+                name="myapp.process",
+                state=TaskState.PENDING,
+                timestamp=datetime.now(UTC),
+                group_id=group_id,
+            )
+        )
+        graph.add_event(
+            TaskEvent(
+                task_id="member-2",
+                name="myapp.process",
+                state=TaskState.PENDING,
+                timestamp=datetime.now(UTC),
+                group_id=group_id,
+            )
+        )
+
+        # Group should be created as root (members have no parent yet)
+        group_node_id = f"group:{group_id}"
+        assert group_node_id in graph.nodes
+        assert group_node_id in graph.root_ids
+        assert graph.nodes[group_node_id].parent_id is None
+
+        # Now STARTED events arrive with parent_id
+        graph.add_event(
+            TaskEvent(
+                task_id="member-1",
+                name="myapp.process",
+                state=TaskState.STARTED,
+                timestamp=datetime.now(UTC),
+                parent_id=parent_id,
+                group_id=group_id,
+            )
+        )
+        graph.add_event(
+            TaskEvent(
+                task_id="member-2",
+                name="myapp.process",
+                state=TaskState.STARTED,
+                timestamp=datetime.now(UTC),
+                parent_id=parent_id,
+                group_id=group_id,
+            )
+        )
+
+        # Group should now be linked to parent, not a root
+        group_node = graph.nodes[group_node_id]
+        assert group_node.parent_id == parent_id
+        assert group_node_id not in graph.root_ids
+        assert group_node_id in graph.nodes[parent_id].children
+
     def test_group_node_created_under_common_parent(self) -> None:
         """GROUP node IS created under common parent to differentiate from independent tasks."""
         graph = TaskGraph()

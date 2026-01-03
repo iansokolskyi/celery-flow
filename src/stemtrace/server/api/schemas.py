@@ -1,12 +1,28 @@
 """API response schemas for REST endpoints."""
 
 from datetime import datetime
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from stemtrace.core.events import TaskState
 from stemtrace.core.graph import NodeType
+
+
+class WorkerStatus(str, Enum):
+    """Worker lifecycle status. Inherits from str for easy comparison."""
+
+    ONLINE = "online"
+    OFFLINE = "offline"
+
+
+class TaskStatus(str, Enum):
+    """Task registry status based on execution and registration state."""
+
+    ACTIVE = "active"  # Has been executed AND registered by workers
+    NEVER_RUN = "never_run"  # Registered by workers but never executed
+    NOT_REGISTERED = "not_registered"  # Executed but no worker has it registered
 
 
 class TaskEventResponse(BaseModel):
@@ -127,10 +143,37 @@ class RegisteredTaskResponse(BaseModel):
     docstring: str | None = None
     module: str | None = None
     bound: bool = False
+    execution_count: int = 0
+    registered_by: list[str] = Field(default_factory=list)
+    last_run: datetime | None = None
+    status: TaskStatus = TaskStatus.ACTIVE
 
 
 class TaskRegistryResponse(BaseModel):
     """List of all registered tasks."""
 
     tasks: list[RegisteredTaskResponse]
+    total: int
+
+
+# Worker Registry schemas
+
+
+class WorkerResponse(BaseModel):
+    """Information about a registered worker."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    hostname: str
+    pid: int
+    registered_tasks: list[str] = Field(default_factory=list)
+    status: WorkerStatus
+    registered_at: datetime
+    last_seen: datetime
+
+
+class WorkerListResponse(BaseModel):
+    """List of all registered workers."""
+
+    workers: list[WorkerResponse]
     total: int

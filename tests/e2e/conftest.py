@@ -73,7 +73,7 @@ def ws_url() -> str:
     return WS_URL
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="session", autouse=True)
 def check_services_running(api_client: httpx.Client) -> None:
     """Verify that all services are running before tests start."""
     max_retries = 30

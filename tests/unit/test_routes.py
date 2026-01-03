@@ -369,3 +369,177 @@ class TestTaskRegistryEndpoint:
 
         names = [t["name"] for t in data["tasks"]]
         assert names == ["a_task", "m_task", "z_task"]
+
+    def test_registry_includes_last_run(
+        self, client: TestClient, store: GraphStore, make_event: type
+    ) -> None:
+        """Registry includes last_run timestamp for each task."""
+        store.add_event(make_event.create("task-1", name="myapp.tasks.process"))
+
+        response = client.get("/api/tasks/registry")
+        data = response.json()
+
+        assert data["total"] == 1
+        task = data["tasks"][0]
+        assert task["last_run"] is not None
+        assert "2024" in task["last_run"]  # Year from base_time
+
+    def test_registry_includes_status(
+        self, client: TestClient, store: GraphStore, make_event: type
+    ) -> None:
+        """Registry includes computed status for each task."""
+        store.add_event(make_event.create("task-1", name="myapp.tasks.process"))
+
+        response = client.get("/api/tasks/registry")
+        data = response.json()
+
+        task = data["tasks"][0]
+        # Without worker registry, tasks with executions are "not_registered"
+        assert task["status"] == "not_registered"
+
+    def test_registry_filter_by_status_not_registered(
+        self, client: TestClient, store: GraphStore, make_event: type
+    ) -> None:
+        """Registry filters by not_registered status."""
+        store.add_event(make_event.create("task-1", name="myapp.tasks.process"))
+        store.add_event(make_event.create("task-2", name="myapp.tasks.analyze"))
+
+        response = client.get("/api/tasks/registry?status=not_registered")
+        data = response.json()
+
+        assert data["total"] == 2
+        for task in data["tasks"]:
+            assert task["status"] == "not_registered"
+
+    def test_registry_filter_by_status_active(
+        self, client: TestClient, store: GraphStore, make_event: type
+    ) -> None:
+        """Registry filters by active status (no results without workers)."""
+        store.add_event(make_event.create("task-1", name="myapp.tasks.process"))
+
+        response = client.get("/api/tasks/registry?status=active")
+        data = response.json()
+
+        # Without worker registry, there are no "active" tasks
+        assert data["total"] == 0
+
+
+class TestTaskRegistryWithWorkers:
+    """Tests for registry endpoint with WorkerRegistry integration."""
+
+    def test_registry_active_status_with_worker(
+        self, store: GraphStore, make_event: type
+    ) -> None:
+        """Task with executions AND registered by worker has 'active' status."""
+        from stemtrace.server.store import WorkerRegistry
+
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker(
+            hostname="worker-1",
+            pid=12345,
+            tasks=["myapp.tasks.process"],
+        )
+
+        # Add execution
+        store.add_event(make_event.create("task-1", name="myapp.tasks.process"))
+
+        # Create client with worker registry
+        app = FastAPI()
+        router = create_api_router(store, worker_registry=worker_registry)
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/tasks/registry")
+        data = response.json()
+
+        task = data["tasks"][0]
+        assert task["name"] == "myapp.tasks.process"
+        assert task["status"] == "active"
+        assert "worker-1" in task["registered_by"]
+
+    def test_registry_never_run_status_with_worker(self, store: GraphStore) -> None:
+        """Task registered by worker but never executed has 'never_run' status."""
+        from stemtrace.server.store import WorkerRegistry
+
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker(
+            hostname="worker-1",
+            pid=12345,
+            tasks=["myapp.tasks.new_feature"],
+        )
+
+        # No executions for this task
+
+        app = FastAPI()
+        router = create_api_router(store, worker_registry=worker_registry)
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/tasks/registry")
+        data = response.json()
+
+        task = data["tasks"][0]
+        assert task["name"] == "myapp.tasks.new_feature"
+        assert task["status"] == "never_run"
+        assert task["execution_count"] == 0
+        assert task["last_run"] is None
+
+    def test_registry_filter_never_run(
+        self, store: GraphStore, make_event: type
+    ) -> None:
+        """Filter to show only never_run tasks."""
+        from stemtrace.server.store import WorkerRegistry
+
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker(
+            hostname="worker-1",
+            pid=12345,
+            tasks=["myapp.tasks.executed", "myapp.tasks.not_executed"],
+        )
+
+        # Only one task has executions
+        store.add_event(make_event.create("task-1", name="myapp.tasks.executed"))
+
+        app = FastAPI()
+        router = create_api_router(store, worker_registry=worker_registry)
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/tasks/registry?status=never_run")
+        data = response.json()
+
+        assert data["total"] == 1
+        assert data["tasks"][0]["name"] == "myapp.tasks.not_executed"
+        assert data["tasks"][0]["status"] == "never_run"
+
+    def test_registry_mixed_statuses(self, store: GraphStore, make_event: type) -> None:
+        """Registry shows all three status types correctly."""
+        from stemtrace.server.store import WorkerRegistry
+
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker(
+            hostname="worker-1",
+            pid=12345,
+            tasks=["myapp.tasks.active_task", "myapp.tasks.never_run_task"],
+        )
+
+        # Active: registered + executed
+        store.add_event(make_event.create("task-1", name="myapp.tasks.active_task"))
+        # Not registered: executed but not registered
+        store.add_event(make_event.create("task-2", name="myapp.tasks.orphan_task"))
+        # Never run: registered but not executed (myapp.tasks.never_run_task)
+
+        app = FastAPI()
+        router = create_api_router(store, worker_registry=worker_registry)
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/tasks/registry")
+        data = response.json()
+
+        assert data["total"] == 3
+
+        status_map = {t["name"]: t["status"] for t in data["tasks"]}
+        assert status_map["myapp.tasks.active_task"] == "active"
+        assert status_map["myapp.tasks.orphan_task"] == "not_registered"
+        assert status_map["myapp.tasks.never_run_task"] == "never_run"

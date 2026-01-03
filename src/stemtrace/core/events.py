@@ -20,6 +20,13 @@ class TaskState(str, Enum):
     RETRY = "RETRY"
 
 
+class WorkerEventType(str, Enum):
+    """Worker lifecycle event types."""
+
+    WORKER_READY = "worker_ready"
+    WORKER_SHUTDOWN = "worker_shutdown"
+
+
 class TaskEvent(BaseModel):
     """Immutable task lifecycle event.
 
@@ -65,3 +72,36 @@ class TaskEvent(BaseModel):
     result: Any | None = None
     exception: str | None = None
     traceback: str | None = None
+
+
+class WorkerEvent(BaseModel):
+    """Worker lifecycle event.
+
+    Captures worker startup, shutdown, and task registration information
+    from Celery's worker_ready and worker_shutdown signals.
+
+    Attributes:
+        event_type: Type of worker event (ready or shutdown).
+        hostname: Worker hostname for identification.
+        pid: Worker process ID (with hostname, creates unique ID).
+        timestamp: When this event occurred.
+        registered_tasks: List of task names registered by this worker.
+        shutdown_time: When worker shut down (shutdown event only).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    event_type: WorkerEventType
+    hostname: str
+    pid: int
+    timestamp: datetime
+    registered_tasks: list[str] = []
+    shutdown_time: datetime | None = None
+
+
+__all__ = [
+    "TaskEvent",
+    "TaskState",
+    "WorkerEvent",
+    "WorkerEventType",
+]

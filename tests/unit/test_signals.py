@@ -1,14 +1,17 @@
 """Tests for Celery signal handlers."""
 
+import os
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
-from stemtrace.core.events import TaskState
+from stemtrace.core.events import TaskState, WorkerEvent, WorkerEventType
 from stemtrace.library.config import StemtraceConfig, set_config
 from stemtrace.library.signals import (
     _extract_chord_info,
+    _extract_registered_tasks,
+    _get_hostname_and_pid,
     _on_task_failure,
     _on_task_postrun,
     _on_task_prerun,
@@ -17,6 +20,8 @@ from stemtrace.library.signals import (
     _on_task_sent,
     connect_signals,
     disconnect_signals,
+    on_worker_ready,
+    on_worker_shutdown,
 )
 from stemtrace.library.transports.memory import MemoryTransport
 
@@ -121,6 +126,86 @@ class TestConnectDisconnect:
         )
 
         # Event not published (logged warning instead)
+        assert len(MemoryTransport.events) == 0
+
+
+class TestWorkerLifecycleSignals:
+    """Tests for worker_ready and worker_shutdown signal handlers."""
+
+    def test_get_hostname_and_pid_from_sender(self) -> None:
+        """Extract hostname from sender and pid from OS."""
+        sender = MagicMock()
+        sender.hostname = "worker-1.example.com"
+
+        hostname, pid = _get_hostname_and_pid(sender)
+        assert hostname == "worker-1.example.com"
+        assert pid == os.getpid()
+
+    def test_extract_registered_tasks_filters_celery_internal(self) -> None:
+        """Exclude celery.* tasks from registered task list."""
+        sender = MagicMock()
+        sender.app.tasks = {
+            "tasks.add": MagicMock(),
+            "celery.backend_cleanup": MagicMock(),
+            "tasks.multiply": MagicMock(),
+        }
+
+        tasks = _extract_registered_tasks(sender)
+        assert "tasks.add" in tasks
+        assert "tasks.multiply" in tasks
+        assert all(not t.startswith("celery.") for t in tasks)
+
+    def test_on_worker_ready_publishes_worker_event(
+        self, transport: MemoryTransport
+    ) -> None:
+        """worker_ready publishes WorkerEvent with registered tasks."""
+        sender = MagicMock()
+        sender.hostname = "worker-1"
+        sender.app.tasks = {
+            "tasks.add": MagicMock(),
+            "celery.backend_cleanup": MagicMock(),
+            "tasks.multiply": MagicMock(),
+        }
+
+        on_worker_ready(sender=sender)
+
+        assert len(MemoryTransport.events) == 1
+        event = MemoryTransport.events[0]
+        assert isinstance(event, WorkerEvent)
+        assert event.event_type == WorkerEventType.WORKER_READY
+        assert event.hostname == "worker-1"
+        assert event.pid == os.getpid()
+        assert event.shutdown_time is None
+        assert sorted(event.registered_tasks) == ["tasks.add", "tasks.multiply"]
+
+    def test_on_worker_shutdown_publishes_worker_event(
+        self, transport: MemoryTransport
+    ) -> None:
+        """worker_shutdown publishes WorkerEvent with shutdown_time."""
+        sender = MagicMock()
+        sender.hostname = "worker-1"
+        sender.app.tasks = {}
+
+        on_worker_shutdown(sender=sender, sig=15)
+
+        assert len(MemoryTransport.events) == 1
+        event = MemoryTransport.events[0]
+        assert isinstance(event, WorkerEvent)
+        assert event.event_type == WorkerEventType.WORKER_SHUTDOWN
+        assert event.hostname == "worker-1"
+        assert event.pid == os.getpid()
+        assert event.shutdown_time is not None
+
+    def test_worker_lifecycle_does_not_raise_without_transport(self) -> None:
+        """Handlers should never raise if stemtrace not initialized."""
+        disconnect_signals()
+        sender = MagicMock()
+        sender.hostname = "worker-1"
+        sender.app.tasks = {"tasks.add": MagicMock()}
+
+        on_worker_ready(sender=sender)
+        on_worker_shutdown(sender=sender, sig=15)
+
         assert len(MemoryTransport.events) == 0
 
 
