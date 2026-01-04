@@ -23,7 +23,7 @@ def _sanitize_derived_prefix(prefix: str) -> str:
 
     This is intentionally strict: request paths are user-controlled. We only allow
     predictable mount prefixes composed of URL-safe segments (letters, numbers,
-    '.', '_', '-') separated by '/'.
+    '.', '_', '-') separated by '/'. Dot-segments ('.' and '..') are rejected.
 
     Args:
         prefix: Candidate prefix derived from request.url.path.
@@ -42,6 +42,9 @@ def _sanitize_derived_prefix(prefix: str) -> str:
 
     segments = [s for s in normalized.split("/") if s]
     if not segments:
+        return ""
+
+    if any(seg in (".", "..") for seg in segments):
         return ""
 
     if not all(_PREFIX_SEGMENT_RE.fullmatch(seg) for seg in segments):
