@@ -168,9 +168,10 @@ e2e-mock:
 
 # Start E2E test environment (Docker)
 e2e-up:
+	docker compose -f docker-compose.e2e.yml build
 	docker compose -f docker-compose.e2e.yml up -d --wait
 	@echo "Waiting for services..."
-	@timeout 60 bash -c 'until curl -sf http://localhost:8000/stemtrace/api/health -o /dev/null; do sleep 2; done' || (echo "❌ Service failed to become healthy"; exit 1)
+	@uv run python scripts/wait_for_http.py http://localhost:8000/stemtrace/api/health --timeout 60
 	@echo "✅ E2E environment ready at http://localhost:8000"
 
 # Stop E2E test environment
@@ -191,6 +192,35 @@ e2e:
 	$(MAKE) e2e-api && $(MAKE) e2e-playwright-real; \
 	status=$$?; \
 	$(MAKE) e2e-down; \
+	exit $$status
+
+# =============================================================================
+# E2E Testing (RabbitMQ broker)
+# =============================================================================
+
+e2e-up-rabbitmq:
+	docker compose -f docker-compose.e2e.rabbitmq.yml build
+	docker compose -f docker-compose.e2e.rabbitmq.yml up -d --wait
+	@echo "Waiting for services..."
+	@uv run python scripts/wait_for_http.py http://localhost:8000/stemtrace/api/health --timeout 60
+	@echo "✅ RabbitMQ E2E environment ready at http://localhost:8000"
+
+e2e-down-rabbitmq:
+	docker compose -f docker-compose.e2e.rabbitmq.yml down -v
+
+e2e-api-rabbitmq:
+	CELERY_BROKER_URL=amqp://guest:guest@localhost:5672// \
+	CELERY_RESULT_BACKEND=redis://localhost:16380/1 \
+	uv run pytest tests/e2e/ -m e2e -v
+
+e2e-playwright-real-rabbitmq:
+	cd $(FRONTEND_DIR) && E2E_MODE=real PLAYWRIGHT_BASE_URL=http://localhost:8000 npm test
+
+e2e-rabbitmq:
+	$(MAKE) e2e-up-rabbitmq
+	$(MAKE) e2e-api-rabbitmq && $(MAKE) e2e-playwright-real-rabbitmq; \
+	status=$$?; \
+	$(MAKE) e2e-down-rabbitmq; \
 	exit $$status
 
 # Quick E2E alias (mock mode, no Docker)

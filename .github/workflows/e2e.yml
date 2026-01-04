@@ -13,6 +13,12 @@ jobs:
     name: API E2E Tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        broker:
+          - redis
+          - rabbitmq
 
     steps:
       - uses: actions/checkout@v6
@@ -20,13 +26,25 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Select compose file and Celery env
+        run: |
+          if [ "${{ matrix.broker }}" = "rabbitmq" ]; then
+            echo "COMPOSE_FILE=docker-compose.e2e.rabbitmq.yml" >> "$GITHUB_ENV"
+            echo "CELERY_BROKER_URL=amqp://guest:guest@localhost:5672//" >> "$GITHUB_ENV"
+            echo "CELERY_RESULT_BACKEND=redis://localhost:16380/1" >> "$GITHUB_ENV"
+          else
+            echo "COMPOSE_FILE=docker-compose.e2e.yml" >> "$GITHUB_ENV"
+            echo "CELERY_BROKER_URL=redis://localhost:16379/0" >> "$GITHUB_ENV"
+            echo "CELERY_RESULT_BACKEND=redis://localhost:16379/1" >> "$GITHUB_ENV"
+          fi
+
       - name: Build images
         run: |
-          docker compose -f docker-compose.e2e.yml build
+          docker compose -f "$COMPOSE_FILE" build
 
       - name: Start services
         run: |
-          docker compose -f docker-compose.e2e.yml up -d
+          docker compose -f "$COMPOSE_FILE" up -d
           # Wait for services to be healthy
           echo "Waiting for services..."
           timeout 120 bash -c 'until curl -sf http://localhost:8000/stemtrace/api/health -o /dev/null; do sleep 2; done'
@@ -51,16 +69,23 @@ jobs:
       - name: Show logs on failure
         if: failure()
         run: |
-          docker compose -f docker-compose.e2e.yml logs
+          docker compose -f "$COMPOSE_FILE" logs
 
       - name: Stop services
         if: always()
-        run: docker compose -f docker-compose.e2e.yml down -v
+        run: |
+          docker compose -f "$COMPOSE_FILE" down -v
 
   playwright:
     name: Playwright E2E Tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        broker:
+          - redis
+          - rabbitmq
 
     steps:
       - uses: actions/checkout@v6
@@ -68,13 +93,25 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Select compose file and Celery env
+        run: |
+          if [ "${{ matrix.broker }}" = "rabbitmq" ]; then
+            echo "COMPOSE_FILE=docker-compose.e2e.rabbitmq.yml" >> "$GITHUB_ENV"
+            echo "CELERY_BROKER_URL=amqp://guest:guest@localhost:5672//" >> "$GITHUB_ENV"
+            echo "CELERY_RESULT_BACKEND=redis://localhost:16380/1" >> "$GITHUB_ENV"
+          else
+            echo "COMPOSE_FILE=docker-compose.e2e.yml" >> "$GITHUB_ENV"
+            echo "CELERY_BROKER_URL=redis://localhost:16379/0" >> "$GITHUB_ENV"
+            echo "CELERY_RESULT_BACKEND=redis://localhost:16379/1" >> "$GITHUB_ENV"
+          fi
+
       - name: Build images
         run: |
-          docker compose -f docker-compose.e2e.yml build
+          docker compose -f "$COMPOSE_FILE" build
 
       - name: Start services
         run: |
-          docker compose -f docker-compose.e2e.yml up -d
+          docker compose -f "$COMPOSE_FILE" up -d
           echo "Waiting for services..."
           timeout 120 bash -c 'until curl -sf http://localhost:8000/stemtrace/api/health -o /dev/null; do sleep 2; done'
           echo "Services ready!"
@@ -133,7 +170,7 @@ jobs:
         uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.broker }}
           path: src/stemtrace/server/ui/frontend/playwright-report/
           retention-days: 7
 
@@ -141,15 +178,16 @@ jobs:
         uses: actions/upload-artifact@v6
         if: failure()
         with:
-          name: playwright-test-results
+          name: playwright-test-results-${{ matrix.broker }}
           path: src/stemtrace/server/ui/frontend/test-results/
           retention-days: 7
 
       - name: Show logs on failure
         if: failure()
         run: |
-          docker compose -f docker-compose.e2e.yml logs
+          docker compose -f "$COMPOSE_FILE" logs
 
       - name: Stop services
         if: always()
-        run: docker compose -f docker-compose.e2e.yml down -v
+        run: |
+          docker compose -f "$COMPOSE_FILE" down -v

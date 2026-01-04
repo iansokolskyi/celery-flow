@@ -3,7 +3,9 @@
 import json
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import unquote
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -398,3 +400,52 @@ class TestStemtraceBaseInjectionEscaping:
 
             expected_js = json.dumps(dangerous_prefix).replace("</", "<\\/")
             assert f"window.__STEMTRACE_BASE__={expected_js};" in resp.text
+
+
+class TestDerivedPrefixSanitization:
+    """Regression tests for sanitizing prefixes derived from request paths."""
+
+    @pytest.mark.parametrize(
+        "suffix",
+        [
+            # Basic reflected XSS payloads
+            "%3Cscript%3Ealert(1)%3C%2Fscript%3E",
+            "%3Cimg%20src%3Dx%20onerror%3Dwindow.__PWNED__%3Dtrue%3E",
+            "%3Csvg%20onload%3Dwindow.__PWNED__%3Dtrue%3E",
+            # Try to break out of the injected <script> context
+            "%3C%2Fscript%3E%3Cscript%3Ewindow.__PWNED__%3Dtrue%3C%2Fscript%3E",
+            # Try to confuse routing/prefix extraction (encoded slash)
+            "a%2Fb%3Cscript%3Ewindow.__PWNED__%3Dtrue%3C%2Fscript%3E",
+        ],
+    )
+    def test_embedded_mode_blocks_xss_payloads_in_path(
+        self, tmp_path: Path, suffix: str
+    ) -> None:
+        """Try hard to inject executable content via user-controlled SPA paths."""
+        dist_dir = tmp_path / "dist"
+        dist_dir.mkdir()
+        (dist_dir / "assets").mkdir()
+        (dist_dir / "index.html").write_text(
+            "<html><head></head><body>OK</body></html>"
+        )
+
+        with patch("stemtrace.server.ui.static._FRONTEND_DIR", dist_dir):
+            router = get_static_router()
+            assert router is not None
+
+            app = FastAPI()
+            app.include_router(router, prefix="/stemtrace")
+            client = TestClient(app)
+
+            resp = client.get(f"/stemtrace/{suffix}")
+            assert resp.status_code == 200
+
+            # Correct base must be preserved for embedded mode.
+            assert 'window.__STEMTRACE_BASE__="/stemtrace"' in resp.text
+
+            # If we ever reflect decoded user-controlled data into the HTML/JS,
+            # these would show up and indicate an exploitable injection path.
+            decoded = unquote(suffix)
+            assert decoded not in resp.text
+            assert "window.__PWNED__" not in resp.text
+            assert "</script><script>" not in resp.text

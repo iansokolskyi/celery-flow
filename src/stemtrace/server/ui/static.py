@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -13,6 +14,43 @@ from fastapi.staticfiles import StaticFiles
 logger = logging.getLogger(__name__)
 
 _FRONTEND_DIR = Path(__file__).parent / "frontend" / "dist"
+
+_PREFIX_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def _sanitize_derived_prefix(prefix: str) -> str:
+    """Sanitize a prefix derived from request paths.
+
+    This is intentionally strict: request paths are user-controlled. We only allow
+    predictable mount prefixes composed of URL-safe segments (letters, numbers,
+    '.', '_', '-') separated by '/'. Dot-segments ('.' and '..') are rejected.
+
+    Args:
+        prefix: Candidate prefix derived from request.url.path.
+
+    Returns:
+        A safe prefix (e.g. "/stemtrace", "/api/monitoring") or "" for root/invalid.
+    """
+    normalized = prefix.strip()
+    if normalized in ("", "/"):
+        return ""
+
+    # Remove trailing slash but keep leading slash semantics.
+    normalized = normalized.rstrip("/")
+    if not normalized.startswith("/"):
+        return ""
+
+    segments = [s for s in normalized.split("/") if s]
+    if not segments:
+        return ""
+
+    if any(seg in (".", "..") for seg in segments):
+        return ""
+
+    if not all(_PREFIX_SEGMENT_RE.fullmatch(seg) for seg in segments):
+        return ""
+
+    return "/" + "/".join(segments)
 
 
 def _rewrite_html_for_prefix(
@@ -76,7 +114,7 @@ def get_static_router_with_base(api_base: str | None) -> APIRouter | None:
             rewrite_assets = False
         else:
             # Derive from URL: rewrite assets to match mount point
-            prefix = request.url.path.rstrip("/") or ""
+            prefix = _sanitize_derived_prefix(request.url.path.rstrip("/") or "")
             rewrite_assets = True
         return HTMLResponse(
             _rewrite_html_for_prefix(
@@ -102,11 +140,12 @@ def get_static_router_with_base(api_base: str | None) -> APIRouter | None:
         else:
             # Extract prefix: /stemtrace/tasks/123 -> /stemtrace
             url_path = request.url.path
-            prefix = (
+            derived = (
                 url_path[: -len(path)].rstrip("/")
                 if path and url_path.endswith(path)
                 else url_path.rstrip("/")
             )
+            prefix = _sanitize_derived_prefix(derived)
             rewrite_assets = True
         return HTMLResponse(
             _rewrite_html_for_prefix(

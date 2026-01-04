@@ -13,8 +13,9 @@ from celery import Celery, chain, group
 
 import stemtrace
 
-# Create Celery app with Redis broker
-# Use port 16379 for E2E tests (Docker exposes Redis on alternate port)
+# Create Celery app for E2E tests.
+# Defaults to Redis on port 16379 (Docker exposes Redis on alternate port), but can
+# be overridden to RabbitMQ via CELERY_BROKER_URL.
 app = Celery(
     "e2e_tasks",
     broker=os.environ.get("CELERY_BROKER_URL", "redis://localhost:16379/0"),
