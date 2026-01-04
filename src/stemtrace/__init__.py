@@ -134,6 +134,7 @@ def init_app(
     fastapi_app: "FastAPI",
     *,
     broker_url: str | None = None,
+    transport_url: str | None = None,
     prefix: str = "/stemtrace",
     ttl: int = 86400,
     max_nodes: int = 10000,
@@ -145,7 +146,10 @@ def init_app(
 
     Args:
         fastapi_app: Your FastAPI application instance.
-        broker_url: Broker URL for events. Defaults to STEMTRACE_BROKER_URL env var.
+        broker_url: Celery broker URL used for on-demand inspection (workers/registry).
+            Defaults to STEMTRACE_BROKER_URL env var.
+        transport_url: Event transport URL used to consume stemtrace events. If None,
+            defaults to broker_url. Can also be provided via STEMTRACE_TRANSPORT_URL.
         prefix: Mount path for stemtrace routes (default: "/stemtrace").
         ttl: Event TTL in seconds (default: 24 hours).
         max_nodes: Maximum number of nodes in memory store (default: 10000).
@@ -167,8 +171,12 @@ def init_app(
                 "set STEMTRACE_BROKER_URL environment variable."
             )
 
+    if transport_url is None:
+        transport_url = os.getenv("STEMTRACE_TRANSPORT_URL") or broker_url
+
     extension = StemtraceExtension(
         broker_url=broker_url,
+        transport_url=transport_url,
         embedded_consumer=embedded_consumer,
         serve_ui=serve_ui,
         prefix=prefix,
