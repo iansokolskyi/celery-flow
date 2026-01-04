@@ -556,6 +556,123 @@ class TestRedisTransport:
         assert "Failed to parse event from Redis stream" in caplog.text
 
 
+def _install_fake_kombu_for_consume(
+    monkeypatch: Any, *, drain_handler: Any
+) -> type[Any]:
+    """Install a fake kombu consumer stack into sys.modules (no broker required).
+
+    Args:
+        monkeypatch: pytest monkeypatch fixture.
+        drain_handler: Callable invoked from Connection.drain_events with signature:
+            (drain_count: int, callbacks: list[Any]) -> None
+
+    Returns:
+        The fake Connection class so tests can inject behavior if needed.
+    """
+    fake_kombu = types.ModuleType("kombu")
+    fake_kombu_messaging = types.ModuleType("kombu.messaging")
+
+    class FakeMessage:
+        def __init__(self, *, reject_raises: bool = False) -> None:
+            self.acked = False
+            self.rejected = False
+            self._reject_raises = reject_raises
+
+        def ack(self) -> None:
+            self.acked = True
+
+        def reject(self, *, requeue: bool) -> None:
+            del requeue
+            self.rejected = True
+            if self._reject_raises:
+                raise RuntimeError("reject failed")
+
+    class FakeChannel:
+        def __init__(self) -> None:
+            self.callbacks: list[Any] = []
+
+    class Connection:
+        def __init__(self, url: str, **_: Any) -> None:
+            self.url = url
+            self._channel = FakeChannel()
+            self._drain_count = 0
+
+        def __enter__(self) -> "Connection":
+            return self
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            del exc_type, exc, tb
+
+        def channel(self) -> FakeChannel:
+            return self._channel
+
+        def drain_events(self, *, timeout: int) -> None:
+            del timeout
+            self._drain_count += 1
+            drain_handler(self._drain_count, self._channel.callbacks)
+
+    class Exchange:
+        def __init__(self, name: str, *, type: str, durable: bool) -> None:
+            self.name = name
+            del type, durable
+
+        def maybe_bind(self, channel: FakeChannel) -> None:
+            del channel
+
+        def declare(self) -> None:
+            return None
+
+    class Queue:
+        def __init__(
+            self,
+            *,
+            name: str,
+            exchange: Exchange,
+            routing_key: str,
+            durable: bool,
+            queue_arguments: dict[str, Any],
+        ) -> None:
+            self.name = name
+            del exchange, routing_key, durable, queue_arguments
+
+        def maybe_bind(self, channel: FakeChannel) -> None:
+            del channel
+
+        def declare(self) -> None:
+            return None
+
+    class Consumer:
+        def __init__(
+            self,
+            channel: FakeChannel,
+            *,
+            queues: list[Queue],
+            callbacks: list[Any],
+            accept: list[str],
+        ) -> None:
+            del queues, accept
+            self._channel = channel
+            self._callbacks = callbacks
+
+        def __enter__(self) -> "Consumer":
+            self._channel.callbacks = self._callbacks
+            return self
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            del exc_type, exc, tb
+            self._channel.callbacks = []
+
+    fake_kombu.Connection = Connection
+    fake_kombu.Exchange = Exchange
+    fake_kombu.Queue = Queue
+    fake_kombu.FakeMessage = FakeMessage
+    fake_kombu_messaging.Consumer = Consumer
+
+    monkeypatch.setitem(sys.modules, "kombu", fake_kombu)
+    monkeypatch.setitem(sys.modules, "kombu.messaging", fake_kombu_messaging)
+    return Connection
+
+
 class TestRabbitMQTransport:
     """Tests for RabbitMQTransport without a broker."""
 
@@ -641,114 +758,25 @@ class TestRabbitMQTransport:
 
     def test_consume_yields_event_using_fake_kombu(self, monkeypatch: Any) -> None:
         """consume() yields parsed events (exercise kombu control flow without I/O)."""
-        fake_kombu = types.ModuleType("kombu")
-        fake_kombu_messaging = types.ModuleType("kombu.messaging")
+        seen: dict[str, Any] = {}
 
-        class FakeMessage:
-            def __init__(self) -> None:
-                self.acked = False
-                self.rejected = False
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            if drain_count > 1:
+                raise TimeoutError
 
-            def ack(self) -> None:
-                self.acked = True
+            body = TaskEvent(
+                task_id="consume-1",
+                name="tests.consume",
+                state=TaskState.RECEIVED,
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            ).model_dump(mode="json")
+            # Use the fake message type we installed on the kombu module.
+            msg = sys.modules["kombu"].FakeMessage()  # type: ignore[attr-defined]
+            seen["msg"] = msg
+            for cb in callbacks:
+                cb(body, msg)
 
-            def reject(self, *, requeue: bool) -> None:
-                del requeue
-                self.rejected = True
-
-        class FakeChannel:
-            def __init__(self) -> None:
-                self.callbacks: list[Any] = []
-
-        class Connection:
-            def __init__(self, url: str, **_: Any) -> None:
-                self.url = url
-                self._channel = FakeChannel()
-                self._drained = False
-
-            def __enter__(self) -> "Connection":
-                return self
-
-            def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-                del exc_type, exc, tb
-
-            def channel(self) -> FakeChannel:
-                return self._channel
-
-            def drain_events(self, *, timeout: int) -> None:
-                del timeout
-                if self._drained:
-                    raise TimeoutError
-                self._drained = True
-
-                body = TaskEvent(
-                    task_id="consume-1",
-                    name="tests.consume",
-                    state=TaskState.RECEIVED,
-                    timestamp=datetime(2024, 1, 1, tzinfo=UTC),
-                ).model_dump(mode="json")
-                msg = FakeMessage()
-                for cb in self._channel.callbacks:
-                    cb(body, msg)
-
-        class Exchange:
-            def __init__(self, name: str, *, type: str, durable: bool) -> None:
-                self.name = name
-                del type, durable
-
-            def maybe_bind(self, channel: FakeChannel) -> None:
-                del channel
-
-            def declare(self) -> None:
-                return None
-
-        class Queue:
-            def __init__(
-                self,
-                *,
-                name: str,
-                exchange: Exchange,
-                routing_key: str,
-                durable: bool,
-                queue_arguments: dict[str, Any],
-            ) -> None:
-                self.name = name
-                del exchange, routing_key, durable, queue_arguments
-
-            def maybe_bind(self, channel: FakeChannel) -> None:
-                del channel
-
-            def declare(self) -> None:
-                return None
-
-        class Consumer:
-            def __init__(
-                self,
-                channel: FakeChannel,
-                *,
-                queues: list[Queue],
-                callbacks: list[Any],
-                accept: list[str],
-            ) -> None:
-                del queues, accept
-                self._channel = channel
-                self._callbacks = callbacks
-
-            def __enter__(self) -> "Consumer":
-                self._channel.callbacks = self._callbacks
-                return self
-
-            def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-                del exc_type, exc, tb
-                self._channel.callbacks = []
-
-        fake_kombu.Connection = Connection
-        fake_kombu.Exchange = Exchange
-        fake_kombu.Queue = Queue
-        fake_kombu_messaging.Consumer = Consumer
-
-        monkeypatch.setitem(sys.modules, "kombu", fake_kombu)
-        monkeypatch.setitem(sys.modules, "kombu.messaging", fake_kombu_messaging)
+        _install_fake_kombu_for_consume(monkeypatch, drain_handler=drain_handler)
 
         transport = RabbitMQTransport.from_url(
             "amqp://localhost", prefix="test", ttl=60
@@ -759,6 +787,7 @@ class TestRabbitMQTransport:
 
         assert isinstance(received, TaskEvent)
         assert received.task_id == "consume-1"
+        assert seen["msg"].acked is True
 
     def test_declare_exchange_and_queue_uses_queue_arguments(
         self, monkeypatch: Any
@@ -851,129 +880,31 @@ class TestRabbitMQTransport:
         """consume() rejects malformed messages and still yields subsequent valid ones."""
         caplog.set_level(logging.DEBUG, logger="stemtrace.library.transports.rabbitmq")
 
-        fake_kombu = types.ModuleType("kombu")
-        fake_kombu_messaging = types.ModuleType("kombu.messaging")
-
         seen: dict[str, Any] = {}
 
-        class FakeMessage:
-            def __init__(self, *, reject_raises: bool) -> None:
-                self.acked = False
-                self.rejected = False
-                self._reject_raises = reject_raises
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            # Use the fake message type we installed on the kombu module.
+            FakeMessage = sys.modules["kombu"].FakeMessage  # type: ignore[attr-defined]
+            if drain_count == 1:
+                body = {"unexpected": "value"}
+                seen["invalid_msg"] = FakeMessage(reject_raises=True)
+                for cb in callbacks:
+                    cb(body, seen["invalid_msg"])
+                return
+            if drain_count == 2:
+                body = TaskEvent(
+                    task_id="consume-2",
+                    name="tests.consume",
+                    state=TaskState.RECEIVED,
+                    timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                ).model_dump(mode="json")
+                seen["valid_msg"] = FakeMessage(reject_raises=False)
+                for cb in callbacks:
+                    cb(body, seen["valid_msg"])
+                return
+            raise TimeoutError
 
-            def ack(self) -> None:
-                self.acked = True
-
-            def reject(self, *, requeue: bool) -> None:
-                del requeue
-                self.rejected = True
-                if self._reject_raises:
-                    raise RuntimeError("reject failed")
-
-        class FakeChannel:
-            def __init__(self) -> None:
-                self.callbacks: list[Any] = []
-
-        class Connection:
-            def __init__(self, url: str, **_: Any) -> None:
-                self.url = url
-                self._channel = FakeChannel()
-                self._drain_count = 0
-
-            def __enter__(self) -> "Connection":
-                return self
-
-            def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-                del exc_type, exc, tb
-
-            def channel(self) -> FakeChannel:
-                return self._channel
-
-            def drain_events(self, *, timeout: int) -> None:
-                del timeout
-                self._drain_count += 1
-
-                if self._drain_count == 1:
-                    # Malformed payload triggers reject path.
-                    body = {"unexpected": "value"}
-                    seen["invalid_msg"] = FakeMessage(reject_raises=True)
-                    for cb in self._channel.callbacks:
-                        cb(body, seen["invalid_msg"])
-                    return
-
-                if self._drain_count == 2:
-                    body = TaskEvent(
-                        task_id="consume-2",
-                        name="tests.consume",
-                        state=TaskState.RECEIVED,
-                        timestamp=datetime(2024, 1, 1, tzinfo=UTC),
-                    ).model_dump(mode="json")
-                    seen["valid_msg"] = FakeMessage(reject_raises=False)
-                    for cb in self._channel.callbacks:
-                        cb(body, seen["valid_msg"])
-                    return
-
-                raise TimeoutError
-
-        class Exchange:
-            def __init__(self, name: str, *, type: str, durable: bool) -> None:
-                self.name = name
-                del type, durable
-
-            def maybe_bind(self, channel: FakeChannel) -> None:
-                del channel
-
-            def declare(self) -> None:
-                return None
-
-        class Queue:
-            def __init__(
-                self,
-                *,
-                name: str,
-                exchange: Exchange,
-                routing_key: str,
-                durable: bool,
-                queue_arguments: dict[str, Any],
-            ) -> None:
-                self.name = name
-                del exchange, routing_key, durable, queue_arguments
-
-            def maybe_bind(self, channel: FakeChannel) -> None:
-                del channel
-
-            def declare(self) -> None:
-                return None
-
-        class Consumer:
-            def __init__(
-                self,
-                channel: FakeChannel,
-                *,
-                queues: list[Queue],
-                callbacks: list[Any],
-                accept: list[str],
-            ) -> None:
-                del queues, accept
-                self._channel = channel
-                self._callbacks = callbacks
-
-            def __enter__(self) -> "Consumer":
-                self._channel.callbacks = self._callbacks
-                return self
-
-            def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-                del exc_type, exc, tb
-                self._channel.callbacks = []
-
-        fake_kombu.Connection = Connection
-        fake_kombu.Exchange = Exchange
-        fake_kombu.Queue = Queue
-        fake_kombu_messaging.Consumer = Consumer
-
-        monkeypatch.setitem(sys.modules, "kombu", fake_kombu)
-        monkeypatch.setitem(sys.modules, "kombu.messaging", fake_kombu_messaging)
+        _install_fake_kombu_for_consume(monkeypatch, drain_handler=drain_handler)
 
         transport = RabbitMQTransport.from_url(
             "amqp://localhost", prefix="test", ttl=60
