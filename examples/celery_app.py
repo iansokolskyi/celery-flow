@@ -9,17 +9,37 @@ task events for visualization, including:
 - Group/chord visualization with synthetic GROUP nodes
 
 Usage:
-    # Install dependencies
-    pip install stemtrace[redis]
+    # Install dependencies (PyPI)
+    pip install stemtrace
+
+    # Or (from repo)
+    uv sync --extra dev
 
     # Start Redis
     docker run -d -p 6379:6379 redis:alpine
+
+    # (Optional) Start RabbitMQ (for RabbitMQ broker tests)
+    docker run -d -p 5672:5672 -p 15672:15672 rabbitmq:3-management
 
     # Start worker
     celery -A examples.celery_app worker --loglevel=info
 
     # Start stemtrace server (in another terminal)
     stemtrace server
+
+    # Switch between Redis and RabbitMQ using environment variables:
+    #   - CELERY_BROKER_URL controls where Celery sends tasks (default: Redis)
+    #   - CELERY_RESULT_BACKEND controls result backend (default: Redis)
+    #
+    # RabbitMQ note: chord-style workflows require a result backend that supports
+    # chords; `redis://` works well.
+    #
+    # Example (RabbitMQ broker + Redis result backend):
+    #   export CELERY_BROKER_URL="amqp://guest:guest@localhost:5672//"
+    #   export CELERY_RESULT_BACKEND="redis://localhost:6379/1"
+    #
+    # (Optional) override stemtrace's event transport independent of Celery:
+    #   export STEMTRACE_TRANSPORT_URL="amqp://guest:guest@localhost:5672//"
 
     # Run demo tasks
     python examples/celery_app.py workflow  # Complex workflow (chain + group)
@@ -32,6 +52,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import random
 import sys
 from typing import Any
@@ -40,15 +61,24 @@ from celery import Celery, chain, chord, group
 
 import stemtrace
 
+# Defaults (Redis local)
+_DEFAULT_REDIS_BROKER = "redis://localhost:6379/0"
+_DEFAULT_REDIS_BACKEND = "redis://localhost:6379/1"
+
+# Allow env-driven configuration so the same example can test Redis or RabbitMQ.
+_CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", _DEFAULT_REDIS_BROKER)
+_CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", _DEFAULT_REDIS_BACKEND)
+
 # Create Celery app
 app = Celery(
     "examples",
-    broker="redis://localhost:6379/0",
-    backend="redis://localhost:6379/1",
+    broker=_CELERY_BROKER_URL,
+    backend=_CELERY_RESULT_BACKEND,
 )
 
 # Initialize stemtrace tracking
-stemtrace.init_worker(app)
+_STEMTRACE_TRANSPORT_URL = os.getenv("STEMTRACE_TRANSPORT_URL")
+stemtrace.init_worker(app, transport_url=_STEMTRACE_TRANSPORT_URL)
 
 
 # =============================================================================

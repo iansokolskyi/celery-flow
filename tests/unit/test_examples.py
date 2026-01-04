@@ -9,6 +9,7 @@ These tests ensure that the examples in the examples/ directory:
 This helps catch regressions before shipping to users.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -176,10 +177,57 @@ class TestExamplesConsistency:
     """Tests for consistency across examples."""
 
     def test_celery_app_uses_redis_broker(self) -> None:
-        """celery_app.py should use redis as broker."""
+        """celery_app.py defaults to redis broker unless overridden via env."""
         from celery_app import app as celery_app_app
 
-        assert "redis" in (celery_app_app.conf.broker_url or "")
+        configured = os.getenv("CELERY_BROKER_URL")
+        if configured is None:
+            assert (celery_app_app.conf.broker_url or "").startswith("redis://")
+        else:
+            assert (celery_app_app.conf.broker_url or "") == configured
+
+    def test_celery_app_can_be_configured_via_env(self) -> None:
+        """celery_app.py respects CELERY_BROKER_URL and CELERY_RESULT_BACKEND env vars."""
+        import importlib
+
+        old_broker = os.environ.get("CELERY_BROKER_URL")
+        old_backend = os.environ.get("CELERY_RESULT_BACKEND")
+        old_transport = os.environ.get("STEMTRACE_TRANSPORT_URL")
+        try:
+            os.environ["CELERY_BROKER_URL"] = "amqp://guest:guest@localhost:5672//"
+            os.environ["CELERY_RESULT_BACKEND"] = "redis://localhost:6379/1"
+            os.environ["STEMTRACE_TRANSPORT_URL"] = (
+                "amqp://guest:guest@localhost:5672//"
+            )
+
+            # Fresh reload so module-level config reads env vars.
+            if "celery_app" in sys.modules:
+                importlib.reload(sys.modules["celery_app"])
+            else:
+                import celery_app  # noqa: F401
+
+            from celery_app import app as celery_app_app
+
+            assert celery_app_app.conf.broker_url == os.environ["CELERY_BROKER_URL"]
+            assert (
+                celery_app_app.conf.result_backend
+                == os.environ["CELERY_RESULT_BACKEND"]
+            )
+        finally:
+
+            def restore(key: str, old: str | None) -> None:
+                if old is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = old
+
+            restore("CELERY_BROKER_URL", old_broker)
+            restore("CELERY_RESULT_BACKEND", old_backend)
+            restore("STEMTRACE_TRANSPORT_URL", old_transport)
+
+            # Restore module defaults for any later tests.
+            if "celery_app" in sys.modules:
+                importlib.reload(sys.modules["celery_app"])
 
     def test_stemtrace_initialization(self) -> None:
         """Examples that use stemtrace should initialize it properly."""
