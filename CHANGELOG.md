@@ -9,7 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0] - 2026-01-04
 
+### Added
+- RabbitMQ event transport
+
+### Changed
+- Tests: improved RabbitMQ transport coverage and reduced duplication
+
+### Fixed
+- UI: harden derived prefix sanitization
+- CI/E2E: avoid artifact name conflicts
+
 ## [0.2.2] - 2026-01-03
+
+### Added
+- README: add release version badge
+
+### Changed
+- Packaging/docs: simplify badges and metadata
+- README: pin PyPI badge to release version
+- Tests: make version assertion dynamic
+
+### Fixed
+- Version bump: sync fix
 
 ## [0.2.1] - 2026-01-03
 
@@ -63,7 +84,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E test suite**: Docker API tests + Playwright browser tests
 - **Comprehensive test suite**: 350+ Python tests, 90%+ coverage
 
-[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.2.1...HEAD
+[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/iansokolskyi/stemtrace/compare/v0.2.2...v0.3.0
+[0.2.2]: https://github.com/iansokolskyi/stemtrace/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/iansokolskyi/stemtrace/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/iansokolskyi/stemtrace/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/iansokolskyi/stemtrace/compare/v0.1.0...v0.1.1
