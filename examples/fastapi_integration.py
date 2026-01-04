@@ -5,7 +5,7 @@ This example shows how to mount stemtrace as a router in your existing
 FastAPI app, with an embedded consumer for development.
 
 Usage:
-    pip install stemtrace[server]
+    pip install stemtrace
     uvicorn examples.fastapi_integration:app --reload
 """
 
@@ -14,19 +14,22 @@ from fastapi import FastAPI
 import stemtrace
 
 # Configuration
+#
+# `broker_url` is Celery's broker (used for on-demand worker inspection).
+# `transport_url` is where stemtrace consumes events from (defaults to broker_url).
 BROKER_URL = "redis://localhost:6379/0"
+TRANSPORT_URL = None  # e.g. "redis://localhost:6379/0"
 
 # Create FastAPI app
 app = FastAPI(
     title="My App with stemtrace",
 )
 
-# Initialize stemtrace in one line (convenience API)
+# Initialize stemtrace in one line
 stemtrace.init_app(
     app,
     broker_url=BROKER_URL,
-    embedded_consumer=True,  # Run consumer in background
-    serve_ui=True,  # Serve the React UI
+    transport_url=TRANSPORT_URL,
 )
 
 
@@ -40,13 +43,6 @@ async def root() -> dict[str, str]:
 @app.get("/health")
 async def health() -> dict[str, str]:
     """Health check endpoint."""
-    # Note: With convenience API, you don't have access to the extension instance
-    # Use StemtraceExtension directly if you need programmatic access:
-    #
-    # from stemtrace import StemtraceExtension
-    # flow = StemtraceExtension(broker_url=...)
-    # flow.init_app(app)
-    # return {"status": flow.consumer.is_running}
     #
     return {"status": "ok"}
 

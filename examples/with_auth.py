@@ -5,7 +5,7 @@ This example shows how to protect stemtrace endpoints with
 basic authentication or API key authentication.
 
 Usage:
-    pip install stemtrace[server]
+    pip install stemtrace
     uvicorn examples.with_auth:app --reload
 """
 
@@ -23,11 +23,10 @@ app = FastAPI(
     title="stemtrace with Auth",
 )
 
-# Initialize stemtrace with authentication (convenience API)
+# Initialize stemtrace with authentication
 stemtrace.init_app(
     app,
     broker_url=BROKER_URL,
-    embedded_consumer=True,
     auth_dependency=require_basic_auth(AUTH_USERNAME, AUTH_PASSWORD),
 )
 

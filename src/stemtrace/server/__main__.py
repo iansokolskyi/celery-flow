@@ -19,9 +19,18 @@ def server(
             "--broker-url",
             "-b",
             envvar="STEMTRACE_BROKER_URL",
-            help="Broker URL (default: redis://localhost:6379/0)",
+            help="Celery broker URL for on-demand inspection (default: redis://localhost:6379/0)",
         ),
     ] = "redis://localhost:6379/0",
+    transport_url: Annotated[
+        str | None,
+        typer.Option(
+            "--transport-url",
+            "-t",
+            envvar="STEMTRACE_TRANSPORT_URL",
+            help="Event transport URL for consuming stemtrace events (default: broker_url)",
+        ),
+    ] = None,
     host: Annotated[
         str,
         typer.Option("--host", "-h", help="Host to bind to"),
@@ -43,11 +52,16 @@ def server(
 
     typer.echo(f"Starting stemtrace server on {host}:{port}")
     typer.echo(f"Broker: {broker_url}")
+    typer.echo(f"Transport: {transport_url or broker_url}")
 
     from stemtrace.server.ui.static import get_static_router_with_base
 
     # Create extension without UI (we'll serve UI at root separately)
-    extension = StemtraceExtension(broker_url=broker_url, serve_ui=False)
+    extension = StemtraceExtension(
+        broker_url=broker_url,
+        transport_url=transport_url,
+        serve_ui=False,
+    )
     fastapi_app = FastAPI(
         title="stemtrace",
         lifespan=extension.lifespan,
@@ -66,13 +80,13 @@ def server(
 
 @app.command()
 def consume(
-    broker_url: Annotated[
+    transport_url: Annotated[
         str,
         typer.Option(
-            "--broker-url",
-            "-b",
-            envvar="STEMTRACE_BROKER_URL",
-            help="Broker URL (default: redis://localhost:6379/0)",
+            "--transport-url",
+            "-t",
+            envvar="STEMTRACE_TRANSPORT_URL",
+            help="Event transport URL (default: redis://localhost:6379/0)",
         ),
     ] = "redis://localhost:6379/0",
     prefix: Annotated[
@@ -92,10 +106,10 @@ def consume(
     from stemtrace.server.store import GraphStore
 
     typer.echo("Starting stemtrace consumer (standalone mode)")
-    typer.echo(f"Broker: {broker_url}")
+    typer.echo(f"Transport: {transport_url}")
 
     store = GraphStore()
-    consumer = EventConsumer(broker_url, store, prefix=prefix, ttl=ttl)
+    consumer = EventConsumer(transport_url, store, prefix=prefix, ttl=ttl)
 
     def handle_signal(_signum: int, _frame: object) -> None:
         """Handle shutdown signals gracefully."""

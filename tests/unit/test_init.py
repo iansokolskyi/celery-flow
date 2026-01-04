@@ -111,12 +111,97 @@ class TestInit:
     ) -> None:
         """init_app() should require broker_url or STEMTRACE_BROKER_URL."""
         monkeypatch.delenv("STEMTRACE_BROKER_URL", raising=False)
+        monkeypatch.delenv("STEMTRACE_TRANSPORT_URL", raising=False)
         app = FastAPI()
 
         with pytest.raises(ConfigurationError) as exc_info:
             init_app(app, broker_url=None, embedded_consumer=False, serve_ui=False)
 
         assert "No broker URL available" in str(exc_info.value)
+
+    def test_init_app_transport_url_defaults_to_broker_url(self) -> None:
+        """transport_url defaults to broker_url when not provided."""
+        app = FastAPI()
+        ext = init_app(
+            app,
+            broker_url="memory://",
+            embedded_consumer=False,
+            serve_ui=False,
+        )
+        assert ext is not None
+        # We don't expose transport_url publicly; this verifies it doesn't error
+        # when transport_url is omitted and broker_url is provided.
+
+    def test_init_app_passes_explicit_transport_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Explicit transport_url is passed through to the extension."""
+        captured: dict[str, object] = {}
+
+        class _FakeExtension:
+            def __init__(
+                self, broker_url: str, *, transport_url: str | None = None, **_: object
+            ) -> None:
+                captured["broker_url"] = broker_url
+                captured["transport_url"] = transport_url
+
+            def init_app(self, _app: FastAPI, *, prefix: str | None = None) -> None:
+                del prefix
+                return None
+
+        monkeypatch.setattr(stemtrace, "StemtraceExtension", _FakeExtension)
+
+        app = FastAPI()
+        init_app(
+            app,
+            broker_url="amqp://guest:guest@localhost:5672//",
+            transport_url="redis://localhost:6379/0",
+            embedded_consumer=False,
+            serve_ui=False,
+        )
+
+        assert captured["broker_url"] == "amqp://guest:guest@localhost:5672//"
+        assert captured["transport_url"] == "redis://localhost:6379/0"
+
+    def test_init_app_uses_transport_url_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """STEMTRACE_TRANSPORT_URL overrides broker_url for event consumption."""
+
+        captured: dict[str, object] = {}
+
+        class _FakeExtension:
+            def __init__(
+                self,
+                broker_url: str,
+                *,
+                transport_url: str | None = None,
+                embedded_consumer: bool = True,
+                serve_ui: bool = True,
+                prefix: str = "/stemtrace",
+                ttl: int = 86400,
+                max_nodes: int = 10000,
+                auth_dependency: object = None,
+            ) -> None:
+                captured["broker_url"] = broker_url
+                captured["transport_url"] = transport_url
+                del embedded_consumer, serve_ui, prefix, ttl, max_nodes, auth_dependency
+
+            def init_app(self, _app: FastAPI, *, prefix: str | None = None) -> None:
+                del prefix
+                return None
+
+        monkeypatch.setenv(
+            "STEMTRACE_BROKER_URL", "amqp://guest:guest@localhost:5672//"
+        )
+        monkeypatch.setenv("STEMTRACE_TRANSPORT_URL", "redis://localhost:6379/0")
+        monkeypatch.setattr(stemtrace, "StemtraceExtension", _FakeExtension)
+
+        app = FastAPI()
+        init_app(app, broker_url=None, embedded_consumer=False, serve_ui=False)
+
+        assert captured["broker_url"] == "amqp://guest:guest@localhost:5672//"
+        assert captured["transport_url"] == "redis://localhost:6379/0"
 
 
 class TestIntrospection:

@@ -1,5 +1,6 @@
 """Tests for REST API routes."""
 
+import threading
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
@@ -7,7 +8,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import stemtrace.server.api.routes as routes
 from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent, TaskState
+from stemtrace.core.graph import NodeType, TaskNode
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.store import GraphStore, WorkerRegistry
 
@@ -573,3 +576,611 @@ class TestTaskRegistryWithWorkers:
         assert status_map["myapp.tasks.active_task"] == "active"
         assert status_map["myapp.tasks.orphan_task"] == "not_registered"
         assert status_map["myapp.tasks.never_run_task"] == "never_run"
+
+
+class _FakeInspect:
+    """Celery Inspect stub that returns predictable worker/task state."""
+
+    def __init__(
+        self,
+        *,
+        ping_result: dict[str, object] | None,
+        stats_result: dict[str, object] | None,
+        registered_result: dict[str, object] | None,
+    ) -> None:
+        self._ping_result = ping_result
+        self._stats_result = stats_result
+        self._registered_result = registered_result
+
+    def ping(self, timeout: float | None = None) -> dict[str, object] | None:
+        del timeout
+        return self._ping_result
+
+    def stats(self, timeout: float | None = None) -> dict[str, object] | None:
+        del timeout
+        return self._stats_result
+
+    def registered(self, timeout: float | None = None) -> dict[str, object] | None:
+        del timeout
+        return self._registered_result
+
+
+class TestWorkersAndRegistryOnDemandInspect:
+    """Tests for on-demand inspect refresh behavior (order-independent)."""
+
+    def test_workers_endpoint_discovers_workers_from_inspect(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Workers list is populated via inspect even if registry starts empty."""
+        store = GraphStore()
+        worker_registry = WorkerRegistry()
+
+        fake = _FakeInspect(
+            ping_result={"celery@worker-1": {"ok": "pong"}},
+            stats_result={"celery@worker-1": {"pid": 1111}},
+            registered_result={
+                "celery@worker-1": ["myapp.tasks.process", "celery.backend_cleanup"]
+            },
+        )
+        monkeypatch.setattr(routes, "_get_inspector", lambda _url, **_: fake)
+
+        app = FastAPI()
+        router = create_api_router(
+            store,
+            worker_registry=worker_registry,
+            broker_url="amqp://guest:guest@localhost:5672//",
+        )
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/workers")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        worker = data["workers"][0]
+        assert worker["hostname"] == "worker-1"
+        assert worker["pid"] == 1111
+        assert worker["status"] == "online"
+        assert worker["registered_tasks"] == ["myapp.tasks.process"]
+
+    def test_registry_endpoint_includes_never_run_tasks_from_inspect(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Registry shows tasks from inspect even without any executed tasks."""
+        store = GraphStore()
+        worker_registry = WorkerRegistry()
+
+        fake = _FakeInspect(
+            ping_result={"celery@worker-1": {"ok": "pong"}},
+            stats_result={"celery@worker-1": {"pid": 1111}},
+            registered_result={"celery@worker-1": ["myapp.tasks.process"]},
+        )
+        monkeypatch.setattr(routes, "_get_inspector", lambda _url, **_: fake)
+
+        app = FastAPI()
+        router = create_api_router(
+            store,
+            worker_registry=worker_registry,
+            broker_url="redis://localhost:6379/0",
+        )
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/tasks/registry")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        task = data["tasks"][0]
+        assert task["name"] == "myapp.tasks.process"
+        assert task["status"] == "never_run"
+
+
+class TestGetInspector:
+    """Tests for _get_inspector() construction safety."""
+
+    def test_get_inspector_returns_none_when_broker_url_missing(self) -> None:
+        """_get_inspector returns None when broker_url is not provided."""
+        assert routes._get_inspector(None) is None
+
+    def test_get_inspector_passes_broker_by_keyword(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_get_inspector must not pass broker_url as Celery loader arg."""
+
+        created: dict[str, object] = {}
+
+        class _StubControl:
+            def inspect(self) -> object:
+                created["inspect_called"] = True
+                return object()
+
+        class _StubCelery:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                created["args"] = args
+                created["kwargs"] = kwargs
+                self._control = _StubControl()
+
+            @property
+            def control(self) -> _StubControl:
+                return self._control
+
+        monkeypatch.setattr(routes, "Celery", _StubCelery)
+
+        broker_url = "amqp://guest:guest@localhost:5672//"
+        inspector = routes._get_inspector(broker_url)
+        assert inspector is not None
+        assert created.get("inspect_called") is True
+
+        kwargs = created["kwargs"]
+        assert isinstance(kwargs, dict)
+        assert kwargs.get("broker") == broker_url
+
+    def test_get_inspector_falls_back_when_timeout_unsupported(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If Inspect(timeout=...) is not supported, fall back to Inspect()."""
+
+        calls: list[object] = []
+
+        class _StubControl:
+            def inspect(self, **kwargs: object) -> object:
+                calls.append(kwargs)
+                if "timeout" in kwargs:
+                    raise TypeError("timeout not supported")
+                return object()
+
+        class _StubCelery:
+            def __init__(self, *_args: object, **_kwargs: object) -> None:
+                self._control = _StubControl()
+
+            @property
+            def control(self) -> _StubControl:
+                return self._control
+
+        monkeypatch.setattr(routes, "Celery", _StubCelery)
+
+        inspector = routes._get_inspector("amqp://guest:guest@localhost:5672//")
+        assert inspector is not None
+        # First try uses timeout, second try is without args
+        assert calls == [{"timeout": 0.5}, {}]
+
+    def test_get_inspector_returns_none_when_constructor_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_get_inspector should never raise."""
+
+        class _BoomCelery:
+            def __init__(self, *_args: object, **_kwargs: object) -> None:
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(routes, "Celery", _BoomCelery)
+
+        assert routes._get_inspector("redis://localhost:6379/0") is None
+
+
+class TestInspectRefreshBranches:
+    """Targeted tests for inspect refresh edge cases (coverage on new code)."""
+
+    def test_refresh_worker_registry_ping_fallback_returns_when_ping_empty(
+        self,
+    ) -> None:
+        """If stats is unavailable and ping() returns nothing, refresh is a no-op."""
+        worker_registry = WorkerRegistry()
+
+        class _Inspect:
+            def stats(self) -> None:
+                return None
+
+            def registered(self) -> None:
+                return None
+
+            def ping(self) -> None:
+                return None
+
+        routes._refresh_worker_registry_from_inspect(worker_registry, _Inspect())  # type: ignore[arg-type]
+        assert worker_registry.get_all_workers() == []
+
+    def test_refresh_worker_registry_ping_fallback_marks_workers_online(self) -> None:
+        """If stats is unavailable but ping() responds, mark known workers online."""
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker("worker-1", 1111, ["a"])
+        worker_registry.mark_shutdown("worker-1", 1111)
+
+        class _Inspect:
+            def stats(self) -> None:
+                return None
+
+            def registered(self) -> None:
+                return None
+
+            def ping(self) -> dict[str, object]:
+                return {"celery@worker-1": {"ok": "pong"}}
+
+        routes._refresh_worker_registry_from_inspect(worker_registry, _Inspect())  # type: ignore[arg-type]
+
+        workers = worker_registry.get_all_workers()
+        assert len(workers) == 1
+        assert workers[0].hostname == "worker-1"
+        assert workers[0].pid == 1111
+        assert workers[0].status == "online"
+
+    def test_refresh_worker_registry_keeps_existing_tasks_when_registered_unavailable(
+        self,
+    ) -> None:
+        """If registered() fails, we keep the existing task list for that worker."""
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker("worker-1", 1111, ["myapp.tasks.process"])
+
+        class _Inspect:
+            def stats(self) -> dict[str, object]:
+                return {"celery@worker-1": {"pid": 1111}}
+
+            def registered(self) -> None:
+                return None
+
+            def ping(self) -> None:
+                return None
+
+        routes._refresh_worker_registry_from_inspect(worker_registry, _Inspect())  # type: ignore[arg-type]
+
+        workers = worker_registry.get_all_workers()
+        assert len(workers) == 1
+        assert workers[0].hostname == "worker-1"
+        assert workers[0].registered_tasks == ["myapp.tasks.process"]
+
+    def test_refresh_worker_registry_marks_missing_workers_offline(self) -> None:
+        """Workers not present in stats responders are marked offline."""
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker("worker-1", 1111, ["a"])
+        worker_registry.register_worker("worker-2", 2222, ["b"])
+
+        class _Inspect:
+            def stats(self) -> dict[str, object]:
+                return {"celery@worker-1": {"pid": 1111}}
+
+            def registered(self) -> dict[str, object]:
+                return {"celery@worker-1": ["a"]}
+
+            def ping(self) -> None:
+                return None
+
+        routes._refresh_worker_registry_from_inspect(worker_registry, _Inspect())  # type: ignore[arg-type]
+
+        status_by_host = {
+            w.hostname: w.status for w in worker_registry.get_all_workers()
+        }
+        assert status_by_host["worker-1"] == "online"
+        assert status_by_host["worker-2"] == "offline"
+
+    def test_refresh_worker_registry_handles_bad_stats_payloads(self) -> None:
+        """Non-dict stats payloads and invalid pids are ignored."""
+        worker_registry = WorkerRegistry()
+
+        class _Inspect:
+            def stats(self) -> dict[str, object]:
+                return {
+                    "celery@worker-1": "not-a-dict",
+                    "celery@worker-2": {"pid": 0},
+                    "celery@worker-3": {"pid": 3333},
+                }
+
+            def registered(self) -> dict[str, object]:
+                # registered() payload for worker-3 is not a list -> treated as empty list
+                return {"celery@worker-3": "not-a-list"}
+
+            def ping(self) -> None:
+                return None
+
+        routes._refresh_worker_registry_from_inspect(worker_registry, _Inspect())  # type: ignore[arg-type]
+
+        workers = worker_registry.get_all_workers()
+        assert len(workers) == 1
+        assert workers[0].hostname == "worker-3"
+        assert workers[0].pid == 3333
+        assert workers[0].registered_tasks == []
+
+
+class TestInspectRateLimiting:
+    """Tests for rate limiting and early-return branches in API refresh."""
+
+    def test_workers_endpoint_refresh_is_rate_limited(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Back-to-back requests should not stampede inspect."""
+        store = GraphStore()
+        worker_registry = WorkerRegistry()
+
+        calls = {"n": 0}
+
+        fake = _FakeInspect(
+            ping_result={"celery@worker-1": {"ok": "pong"}},
+            stats_result={"celery@worker-1": {"pid": 1111}},
+            registered_result={"celery@worker-1": ["myapp.tasks.process"]},
+        )
+
+        def _fake_get_inspector(_url: str, **_: object) -> _FakeInspect:
+            calls["n"] += 1
+            return fake
+
+        monkeypatch.setattr(routes, "_get_inspector", _fake_get_inspector)
+
+        app = FastAPI()
+        router = create_api_router(
+            store,
+            worker_registry=worker_registry,
+            broker_url="redis://localhost:6379/0",
+        )
+        app.include_router(router)
+        client = TestClient(app)
+
+        r1 = client.get("/api/workers")
+        r2 = client.get("/api/workers")
+
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        assert calls["n"] == 1
+
+    def test_workers_endpoint_refresh_skips_when_inner_interval_check_trips(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If the inner rate-limit check trips, refresh should return before calling inspect."""
+        store = GraphStore()
+        worker_registry = WorkerRegistry()
+
+        called = {"n": 0}
+
+        def _fake_get_inspector(_url: str, **_: object) -> None:
+            called["n"] += 1
+            return None
+
+        # Outer check passes (2.1s since last=0), inner check fails (<2s).
+        values = iter([2.1, 0.1])
+        monkeypatch.setattr(routes, "_monotonic", lambda: next(values))
+        monkeypatch.setattr(routes, "_get_inspector", _fake_get_inspector)
+
+        app = FastAPI()
+        router = create_api_router(
+            store,
+            worker_registry=worker_registry,
+            broker_url="redis://localhost:6379/0",
+        )
+        app.include_router(router)
+        client = TestClient(app)
+
+        resp = client.get("/api/workers")
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 0
+        assert called["n"] == 0
+
+    def test_workers_endpoint_refresh_skips_when_inspector_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If _get_inspector returns None, refresh should be a no-op."""
+        store = GraphStore()
+        worker_registry = WorkerRegistry()
+
+        monkeypatch.setattr(routes, "_get_inspector", lambda _url, **_: None)
+
+        app = FastAPI()
+        router = create_api_router(
+            store,
+            worker_registry=worker_registry,
+            broker_url="redis://localhost:6379/0",
+        )
+        app.include_router(router)
+        client = TestClient(app)
+
+        resp = client.get("/api/workers")
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 0
+
+    def test_workers_endpoint_does_not_refresh_when_refresh_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When refresh=false, the endpoint must not trigger Celery inspect."""
+        store = GraphStore()
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker("worker-1", 1111, ["myapp.tasks.process"])
+
+        def _boom(_url: str, **_: object) -> None:
+            raise AssertionError(
+                "_get_inspector should not be called when refresh=false"
+            )
+
+        monkeypatch.setattr(routes, "_get_inspector", _boom)
+
+        app = FastAPI()
+        router = create_api_router(
+            store,
+            worker_registry=worker_registry,
+            broker_url="redis://localhost:6379/0",
+        )
+        app.include_router(router)
+        client = TestClient(app)
+
+        resp = client.get("/api/workers?refresh=false")
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 1
+
+    def test_workers_endpoint_refresh_skips_when_lock_is_held(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If the refresh lock is held by another request, a second request shouldn't block."""
+        store = GraphStore()
+        worker_registry = WorkerRegistry()
+
+        calls = {"n": 0}
+        entered = threading.Event()
+        release = threading.Event()
+
+        fake = _FakeInspect(
+            ping_result={"celery@worker-1": {"ok": "pong"}},
+            stats_result={"celery@worker-1": {"pid": 1111}},
+            registered_result={"celery@worker-1": ["myapp.tasks.process"]},
+        )
+
+        def _blocking_get_inspector(_url: str, **_: object) -> _FakeInspect:
+            calls["n"] += 1
+            entered.set()
+            # Hold the refresh lock long enough for a second request to arrive.
+            release.wait(timeout=2.0)
+            return fake
+
+        monkeypatch.setattr(routes, "_get_inspector", _blocking_get_inspector)
+
+        app = FastAPI()
+        router = create_api_router(
+            store,
+            worker_registry=worker_registry,
+            broker_url="redis://localhost:6379/0",
+        )
+        app.include_router(router)
+
+        results: dict[str, object] = {}
+
+        def _req1() -> None:
+            client = TestClient(app)
+            results["r1"] = client.get("/api/workers")
+
+        t1 = threading.Thread(target=_req1)
+        t1.start()
+
+        assert entered.wait(timeout=2.0) is True
+
+        # Second request should see the lock is held and return without blocking.
+        client2 = TestClient(app)
+        r2 = client2.get("/api/workers")
+
+        release.set()
+        t1.join(timeout=2.0)
+        assert not t1.is_alive(), "First request thread did not complete"
+
+        r1 = results.get("r1")
+        assert r1 is not None, "First request did not complete"
+        # Starlette TestClient returns httpx.Response; validate the request succeeded.
+        assert r1.status_code == 200
+
+        assert r2.status_code == 200
+        assert calls["n"] == 1
+
+
+class TestWorkersEndpointsNoRegistry:
+    """Coverage for workers endpoints when worker_registry is disabled."""
+
+    def test_workers_returns_empty_when_registry_missing(self) -> None:
+        store = GraphStore()
+        app = FastAPI()
+        router = create_api_router(store, worker_registry=None)
+        app.include_router(router)
+        client = TestClient(app)
+
+        resp = client.get("/api/workers")
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 0
+
+    def test_workers_by_hostname_returns_empty_when_registry_missing(self) -> None:
+        store = GraphStore()
+        app = FastAPI()
+        router = create_api_router(store, worker_registry=None)
+        app.include_router(router)
+        client = TestClient(app)
+
+        resp = client.get("/api/workers/worker-1")
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 0
+
+
+class TestWorkersEndpointsWithRegistry:
+    """Coverage for workers endpoints when worker_registry is enabled."""
+
+    def test_workers_by_hostname_filters_when_registry_present(self) -> None:
+        store = GraphStore()
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker("worker-1", 1111, ["a"])
+        worker_registry.register_worker("worker-2", 2222, ["b"])
+
+        app = FastAPI()
+        router = create_api_router(store, worker_registry=worker_registry)
+        app.include_router(router)
+        client = TestClient(app)
+
+        resp = client.get("/api/workers/worker-1")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["workers"][0]["hostname"] == "worker-1"
+
+
+class TestTaskRegistryRegisteredByAggregation:
+    """Coverage for task registry registered_by aggregation edge cases."""
+
+    def test_task_registry_merges_registered_by_across_workers(self) -> None:
+        """If multiple workers register the same task, registered_by includes all hostnames."""
+        store = GraphStore()
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker("worker-1", 1111, ["myapp.tasks.process"])
+        worker_registry.register_worker("worker-2", 2222, ["myapp.tasks.process"])
+
+        app = FastAPI()
+        router = create_api_router(store, worker_registry=worker_registry)
+        app.include_router(router)
+        client = TestClient(app)
+
+        resp = client.get("/api/tasks/registry?refresh=false")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["tasks"][0]["name"] == "myapp.tasks.process"
+        assert data["tasks"][0]["status"] == "never_run"
+        assert data["tasks"][0]["registered_by"] == ["worker-1", "worker-2"]
+
+
+class TestGraphNodeTimingResponse:
+    """Coverage for synthetic node timing computation in graph responses."""
+
+    def test_graph_node_response_timing_computed_from_children(self) -> None:
+        """Synthetic nodes with no events compute timing/duration from child nodes."""
+        t0 = datetime(2024, 1, 1, tzinfo=UTC)
+        t1 = t0 + timedelta(seconds=10)
+        t2 = t0 + timedelta(seconds=25)
+
+        child1 = TaskNode(
+            task_id="child-1",
+            name="myapp.tasks.child1",
+            state=TaskState.SUCCESS,
+            events=[
+                TaskEvent(
+                    task_id="child-1",
+                    name="myapp.tasks.child1",
+                    state=TaskState.SUCCESS,
+                    timestamp=t1,
+                )
+            ],
+        )
+        child2 = TaskNode(
+            task_id="child-2",
+            name="myapp.tasks.child2",
+            state=TaskState.SUCCESS,
+            events=[
+                TaskEvent(
+                    task_id="child-2",
+                    name="myapp.tasks.child2",
+                    state=TaskState.SUCCESS,
+                    timestamp=t2,
+                )
+            ],
+        )
+        group_node = TaskNode(
+            task_id="group:g1",
+            name="group:g1",
+            state=TaskState.SUCCESS,
+            node_type=NodeType.GROUP,
+            children=["child-1", "child-2"],
+        )
+
+        resp = routes._node_to_graph_response(
+            group_node, all_nodes={"child-1": child1, "child-2": child2}
+        )
+        assert resp.first_seen == t1
+        assert resp.last_updated == t2
+        assert resp.duration_ms == int((t2 - t1).total_seconds() * 1000)

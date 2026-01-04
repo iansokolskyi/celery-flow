@@ -39,6 +39,14 @@ class StemtraceExtension:
         stemtrace = StemtraceExtension(broker_url="redis://localhost:6379")
         stemtrace.init_app(app)  # Wraps lifespan + adds router
 
+    Example (RabbitMQ broker + Redis event transport):
+        # Celery uses RabbitMQ, but stemtrace events go to Redis for replay across restarts.
+        stemtrace = StemtraceExtension(
+            broker_url="amqp://guest:guest@localhost:5672//",
+            transport_url="redis://localhost:6379/0",
+        )
+        stemtrace.init_app(app)
+
     Example (manual):
         stemtrace = StemtraceExtension(broker_url="redis://localhost:6379")
         app = FastAPI(lifespan=stemtrace.lifespan)
@@ -49,6 +57,7 @@ class StemtraceExtension:
         self,
         broker_url: str,
         *,
+        transport_url: str | None = None,
         embedded_consumer: bool = True,
         serve_ui: bool = True,
         prefix: str = "/stemtrace",
@@ -56,8 +65,21 @@ class StemtraceExtension:
         max_nodes: int = 10000,
         auth_dependency: Any = None,
     ) -> None:
-        """Initialize extension with broker URL and optional configuration."""
+        """Initialize extension with broker and transport configuration.
+
+        Args:
+            broker_url: Celery broker URL used for on-demand inspection (workers/registry).
+            transport_url: Event transport URL used to consume stemtrace events. If None,
+                defaults to broker_url.
+            embedded_consumer: Whether to start the event consumer inside the FastAPI process.
+            serve_ui: Whether to serve the bundled React UI.
+            prefix: Mount path for stemtrace routes (also used as event prefix after normalization).
+            ttl: Event retention window in seconds (transport-specific).
+            max_nodes: Maximum number of nodes to keep in memory.
+            auth_dependency: Optional FastAPI dependency applied to all routes for authentication.
+        """
         self._broker_url = broker_url
+        self._transport_url = transport_url or broker_url
         self._serve_ui = serve_ui
         self._prefix = self._normalize_prefix(prefix)
         self._auth_dependency = auth_dependency
@@ -69,7 +91,7 @@ class StemtraceExtension:
 
         if embedded_consumer:
             self._consumer = AsyncEventConsumer(
-                broker_url,
+                self._transport_url,
                 self._store,
                 prefix=self._prefix,
                 ttl=ttl,

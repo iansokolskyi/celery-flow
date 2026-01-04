@@ -44,7 +44,7 @@ services:
   #   depends_on:
   #     redis:
   #       condition: service_healthy
-  #   command: ["consume", "--broker-url", "redis://redis:6379"]
+  #   command: ["consume", "--transport-url", "redis://redis:6379"]
 
 volumes:
   redis-data:
