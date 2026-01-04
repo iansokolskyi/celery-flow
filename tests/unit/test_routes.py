@@ -1053,6 +1053,12 @@ class TestInspectRateLimiting:
 
         release.set()
         t1.join(timeout=2.0)
+        assert not t1.is_alive(), "First request thread did not complete"
+
+        r1 = results.get("r1")
+        assert r1 is not None, "First request did not complete"
+        # Starlette TestClient returns httpx.Response; validate the request succeeded.
+        assert r1.status_code == 200
 
         assert r2.status_code == 200
         assert calls["n"] == 1
