@@ -83,21 +83,12 @@ def consume(
     transport_url: Annotated[
         str,
         typer.Option(
-            "--broker-url",
-            "-b",
-            envvar="STEMTRACE_BROKER_URL",
-            help="(deprecated name) Event transport URL (default: redis://localhost:6379/0)",
-        ),
-    ] = "redis://localhost:6379/0",
-    transport_url_new: Annotated[
-        str | None,
-        typer.Option(
             "--transport-url",
             "-t",
             envvar="STEMTRACE_TRANSPORT_URL",
-            help="Event transport URL (overrides --broker-url if set)",
+            help="Event transport URL (default: redis://localhost:6379/0)",
         ),
-    ] = None,
+    ] = "redis://localhost:6379/0",
     prefix: Annotated[
         str,
         typer.Option("--prefix", help="Stream key prefix"),
@@ -114,13 +105,11 @@ def consume(
     from stemtrace.server.consumer import EventConsumer
     from stemtrace.server.store import GraphStore
 
-    effective_transport_url = transport_url_new or transport_url
-
     typer.echo("Starting stemtrace consumer (standalone mode)")
-    typer.echo(f"Transport: {effective_transport_url}")
+    typer.echo(f"Transport: {transport_url}")
 
     store = GraphStore()
-    consumer = EventConsumer(effective_transport_url, store, prefix=prefix, ttl=ttl)
+    consumer = EventConsumer(transport_url, store, prefix=prefix, ttl=ttl)
 
     def handle_signal(_signum: int, _frame: object) -> None:
         """Handle shutdown signals gracefully."""

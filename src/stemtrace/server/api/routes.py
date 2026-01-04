@@ -41,6 +41,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _monotonic() -> float:
+    """Return a monotonic clock reading.
+
+    Wrapped to make rate-limiting logic testable without monkeypatching the
+    global stdlib `time.monotonic()` used by Starlette/AnyIO internals.
+    """
+    return time.monotonic()
+
+
 def _node_to_response(node: TaskNode) -> TaskNodeResponse:
     """Convert TaskNode to API response model.
 
@@ -291,7 +300,7 @@ def create_api_router(
         if worker_registry is None or broker_url is None:
             return
 
-        now = time.monotonic()
+        now = _monotonic()
         if now - last_inspect_refresh < inspect_refresh_min_interval_seconds:
             return
 
@@ -300,7 +309,7 @@ def create_api_router(
         if not inspect_refresh_lock.acquire(blocking=False):
             return
         try:
-            now = time.monotonic()
+            now = _monotonic()
             if now - last_inspect_refresh < inspect_refresh_min_interval_seconds:
                 return
 
@@ -312,7 +321,7 @@ def create_api_router(
 
             with contextlib.suppress(Exception):
                 _refresh_worker_registry_from_inspect(worker_registry, inspector)
-                last_inspect_refresh = time.monotonic()
+                last_inspect_refresh = _monotonic()
         finally:
             inspect_refresh_lock.release()
 

@@ -5,7 +5,7 @@ This example shows how to mount stemtrace as a router in your existing
 FastAPI app, with an embedded consumer for development.
 
 Usage:
-    pip install stemtrace[server]
+    pip install stemtrace
     uvicorn examples.fastapi_integration:app --reload
 """
 
@@ -25,13 +25,11 @@ app = FastAPI(
     title="My App with stemtrace",
 )
 
-# Initialize stemtrace in one line (convenience API)
+# Initialize stemtrace in one line
 stemtrace.init_app(
     app,
     broker_url=BROKER_URL,
     transport_url=TRANSPORT_URL,
-    embedded_consumer=True,  # Run consumer in background
-    serve_ui=True,  # Serve the React UI
 )
 
 
