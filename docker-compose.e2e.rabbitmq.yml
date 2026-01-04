@@ -1,0 +1,88 @@
+# Docker Compose for stemtrace E2E testing (RabbitMQ broker)
+#
+# Usage:
+#   docker compose -f docker-compose.e2e.rabbitmq.yml up -d --wait
+#   docker compose -f docker-compose.e2e.rabbitmq.yml down -v
+#
+# Services:
+#   - rabbitmq: RabbitMQ broker (with management UI)
+#   - worker: Celery worker running E2E test tasks
+#   - server: stemtrace server with UI and API
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "16380:6379" # Dedicated port for RabbitMQ E2E result backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.e2e
+    environment:
+      - CELERY_BROKER_URL=amqp://guest:guest@rabbitmq:5672//
+      # Redis result backend required for group->callback workflows (Celery upgrades
+      # chain(group(...), callback) to a chord, which rpc:// does not support).
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["celery", "-A", "tests.e2e.tasks", "worker", "--loglevel=info", "--concurrency=2", "-E"]
+    healthcheck:
+      test: ["CMD", "celery", "-A", "tests.e2e.tasks", "inspect", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 10s
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - STEMTRACE_BROKER_URL=amqp://guest:guest@rabbitmq:5672//
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    command:
+      [
+        "server",
+        "--broker-url",
+        "amqp://guest:guest@rabbitmq:5672//",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+      ]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import httpx; httpx.get('http://localhost:8000/stemtrace/api/health').raise_for_status()",
+        ]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 5s
